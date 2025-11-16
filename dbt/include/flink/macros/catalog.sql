@@ -1,32 +1,117 @@
-{{% macro flink__get_catalog(information_schema, schemas)-%}}
+{% macro flink__get_catalog(information_schema, schemas) -%}
+  {#
+    Generate catalog metadata for dbt docs using Flink's SHOW and DESCRIBE commands.
 
-   {{%set msg -%}}
-    get_catalog not implemented for flink
-   -%}} endset {{%
-    /*
-      Your database likely has a way of accessing metadata about its objects,
-      whether by querying an information schema or by running `show` and `describe` commands.
-      dbt will use this macro to generate its catalog of objects it knows about. The catalog is one of
-      the artifacts powering the documentation site.
-      As an example, below is a simplified version of postgres__get_catalog
-    */
+    Flink doesn't have INFORMATION_SCHEMA in open-source version,
+    so we use SHOW TABLES and DESCRIBE to build the catalog.
 
-    /*
+    Returns one row per column with table metadata repeated.
+  #}
 
-      select {{database}} as TABLE,
-        "- set table type -"
-             when 'v' then 'VIEW'
-              else 'BASE TABLE'
-        "- set table/view names and descriptions -"
-      use several joins and search types for pulling info together, sorting etc..
-      where (
-        search if schema exists, else build
-          {%- for schema in schemas -%}
-            upper(sch.nspname) = upper('{{ schema }}'){%- if not loop.last %} or {% endif -%}
-          {%- endfor -%}
-      )
-      define any shortcut keys
+  {% set catalog_rows = [] %}
 
-    */
-  {{{{ exceptions.raise_compiler_error(msg) }}}}
- {{% endmacro %}}
+  {# Iterate through each schema (database in Flink terms) #}
+  {% for schema in schemas %}
+
+    {# Get list of tables in this schema #}
+    {% set tables_sql %}
+      SHOW TABLES FROM {{ schema }}
+    {% endset %}
+
+    {% set table_results = run_query(tables_sql) %}
+
+    {% if execute and table_results %}
+      {# Iterate through each table #}
+      {% for table_row in table_results %}
+        {% set table_name = table_row[0] %}
+
+        {# Get columns for this table using DESCRIBE #}
+        {% set describe_sql %}
+          DESCRIBE {{ schema }}.{{ table_name }}
+        {% endset %}
+
+        {% set column_results = run_query(describe_sql) %}
+
+        {% if column_results %}
+          {# Iterate through each column #}
+          {% for col_row in column_results %}
+            {# DESCRIBE returns: (name, type, null, key, extras, watermark, comment) #}
+            {% set column_name = col_row[0] %}
+            {% set column_type = col_row[1] %}
+            {% set column_comment = col_row[6] if col_row|length > 6 else none %}
+
+            {# Build catalog row #}
+            {% set catalog_row = {
+              'table_database': information_schema.database or 'default_catalog',
+              'table_schema': schema,
+              'table_name': table_name,
+              'table_type': 'BASE TABLE',
+              'table_owner': none,
+              'table_comment': none,
+              'column_name': column_name,
+              'column_index': loop.index,
+              'column_type': column_type,
+              'column_comment': column_comment
+            } %}
+
+            {% do catalog_rows.append(catalog_row) %}
+          {% endfor %}
+        {% endif %}
+
+      {% endfor %}
+    {% endif %}
+
+  {% endfor %}
+
+  {# Try to get views as well (Flink 1.18+) #}
+  {% for schema in schemas %}
+
+    {% set views_sql %}
+      SHOW VIEWS FROM {{ schema }}
+    {% endset %}
+
+    {# SHOW VIEWS may not be supported in all Flink versions #}
+    {% set view_results = run_query(views_sql) %}
+
+    {% if execute and view_results %}
+      {% for view_row in view_results %}
+        {% set view_name = view_row[0] %}
+
+        {# Get columns for this view using DESCRIBE #}
+        {% set describe_sql %}
+          DESCRIBE {{ schema }}.{{ view_name }}
+        {% endset %}
+
+        {% set column_results = run_query(describe_sql) %}
+
+        {% if column_results %}
+          {% for col_row in column_results %}
+            {% set column_name = col_row[0] %}
+            {% set column_type = col_row[1] %}
+            {% set column_comment = col_row[6] if col_row|length > 6 else none %}
+
+            {% set catalog_row = {
+              'table_database': information_schema.database or 'default_catalog',
+              'table_schema': schema,
+              'table_name': view_name,
+              'table_type': 'VIEW',
+              'table_owner': none,
+              'table_comment': none,
+              'column_name': column_name,
+              'column_index': loop.index,
+              'column_type': column_type,
+              'column_comment': column_comment
+            } %}
+
+            {% do catalog_rows.append(catalog_row) %}
+          {% endfor %}
+        {% endif %}
+
+      {% endfor %}
+    {% endif %}
+
+  {% endfor %}
+
+  {{ return(catalog_rows) }}
+
+{%- endmacro %}

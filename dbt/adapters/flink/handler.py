@@ -2,7 +2,8 @@ from datetime import datetime
 from time import sleep
 from typing import Dict, Sequence, Tuple, Optional, Any, List
 
-from dbt.events import AdapterLogger
+# dbt-core 1.8+ imports (adapter decoupling)
+from dbt.adapters.events.logging import AdapterLogger
 
 from dbt.adapters.flink.constants import ExecutionConfig
 from dbt.adapters.flink.query_hints_parser import (

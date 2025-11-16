@@ -135,8 +135,12 @@ dbt docs: https://docs.getdbt.com/docs/contributing/building-a-new-adapter
 */
 
 {% macro flink__list_relations_without_caching(schema_relation) -%}
-'''creates a table of relations withough using local caching.'''
-{% endmacro %}
+  {# List all tables in the schema using SHOW TABLES #}
+  {% call statement('list_relations', fetch_result=True) %}
+    show tables
+  {% endcall %}
+  {{ return(load_result('list_relations').table) }}
+{%- endmacro %}
 
 {% macro flink__list_schemas(database) -%}
 '''Returns a table of unique schemas.'''

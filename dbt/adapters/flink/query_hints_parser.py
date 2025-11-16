@@ -55,11 +55,11 @@ class QueryHints:
 class QueryHintsParser:
     @staticmethod
     def parse(sql: str) -> QueryHints:
-        hints_clauses = re.findall("\/\*\*(.+?)\*\/", sql)
+        hints_clauses = re.findall(r"/\*\*(.+?)\*/", sql)
         hints = {}
         for clause in hints_clauses:
-            for hint in re.findall("([a-zA-Z0-9_]+?\(.+?\))", clause):
-                groups = re.findall("([a-zA-Z0-9_]+?)\((.+?)\)", hint)
+            for hint in re.findall(r"([a-zA-Z0-9_]+?\(.+?\))", clause):
+                groups = re.findall(r"([a-zA-Z0-9_]+?)\((.+?)\)", hint)
                 hint_name = groups[0][0].strip()
                 hint_value = QueryHintsParser._strip_quotes(groups[0][1])
                 hints[hint_name] = hint_value

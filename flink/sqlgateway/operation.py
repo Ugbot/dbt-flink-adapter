@@ -1,9 +1,12 @@
 from dataclasses import dataclass
 import json
+import logging
 from typing import Optional, Dict
 import requests
 from flink.sqlgateway.result_parser import SqlGatewayResult, SqlGatewayResultParser
 from flink.sqlgateway.session import SqlGatewaySession
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -28,7 +31,7 @@ class SqlGatewayOperation:
                 "Content-Type": "application/json",
             },
         )
-        print(f"SQL gateway response: {json.dumps(response.json())}")
+        logger.debug("SQL gateway response: %s", response.json())
 
         if response.status_code == 200:
             operation_handle = response.json()["operationHandle"]

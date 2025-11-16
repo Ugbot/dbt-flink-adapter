@@ -1,7 +1,8 @@
 from dataclasses import dataclass
 from typing import Dict, List, Any, Optional
 
-from dbt.events import AdapterLogger
+# dbt-core 1.8+ import (adapter decoupling)
+from dbt.adapters.events.logging import AdapterLogger
 
 logger = AdapterLogger("Flink")
 

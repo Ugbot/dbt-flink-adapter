@@ -5,12 +5,12 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Optional, Any, Tuple
 
-import dbt.exceptions  # noqa
+# dbt-core 1.8+ imports (adapter decoupling)
+import dbt_common.exceptions  # noqa
 import yaml
-from dbt.adapters.base import Credentials
+from dbt.adapters.contracts.connection import Credentials, Connection, ConnectionState
 from dbt.adapters.sql import SQLConnectionManager  # type: ignore
-from dbt.contracts.connection import Connection, ConnectionState
-from dbt.events import AdapterLogger
+from dbt.adapters.events.logging import AdapterLogger
 
 from dbt.adapters.flink.handler import FlinkHandler, FlinkCursor
 from flink.sqlgateway.client import FlinkSqlGatewayClient
@@ -71,7 +71,7 @@ class FlinkConnectionManager(SQLConnectionManager):
             yield
         except Exception as e:
             logger.error("Exception thrown during execution: {}".format(str(e)))
-            raise dbt.exceptions.RuntimeException(str(e))
+            raise dbt_common.exceptions.DbtRuntimeError(str(e))
 
     @classmethod
     def open(cls, connection: Connection):
@@ -108,14 +108,14 @@ class FlinkConnectionManager(SQLConnectionManager):
     def _read_session_handle(cls, credentials: FlinkCredentials) -> Optional[SqlGatewaySession]:
         if os.path.isfile(SESSION_FILE_PATH):
             with open(SESSION_FILE_PATH, "r+") as file:
-                session_file = yaml.load(file, Loader=yaml.FullLoader)
+                session_file = yaml.safe_load(file)
                 session_timestamp = datetime.strptime(
                     session_file["timestamp"], "%Y-%m-%dT%H:%M:%S"
                 )
 
                 if (
                     datetime.now() - session_timestamp
-                ).seconds > credentials.session_idle_timeout_s:
+                ).total_seconds() > credentials.session_idle_timeout_s:
                     logger.info("Stored session has timeout.")
                     return None
 
@@ -130,7 +130,7 @@ class FlinkConnectionManager(SQLConnectionManager):
         return None
 
     @classmethod
-    def _store_session_handle(self, session: SqlGatewaySession):
+    def _store_session_handle(cls, session: SqlGatewaySession):
         content = {
             "timestamp": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
             "session_handle": session.session_handle,

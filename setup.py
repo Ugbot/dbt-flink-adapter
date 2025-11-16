@@ -3,10 +3,12 @@ import os
 import sys
 import re
 
-# require python 3.7 or newer
-if sys.version_info < (3, 7):
-    print("Error: dbt does not support this version of Python.")
-    print("Please upgrade to Python 3.7 or higher.")
+# require python 3.9 or newer (aligned with dbt-core 1.8-1.10 requirements)
+# targeting Python 3.12+ for optimal compatibility
+if sys.version_info < (3, 9):
+    print("Error: dbt-flink-adapter requires Python 3.9 or higher.")
+    print("Please upgrade to Python 3.9 or higher.")
+    print("Note: Python 3.12+ recommended. Python 3.13 is experimental.")
     sys.exit(1)
 
 
@@ -50,7 +52,7 @@ def _get_dbt_core_version():
 
 
 package_name = "dbt-flink-adapter"
-package_version = "1.3.11"
+package_version = "1.8.0"
 # make sure this always matches dbt/adapters/{adapter}/__version__.py
 dbt_core_version = _get_dbt_core_version()
 description = """The Flink adapter plugin for dbt"""
@@ -67,20 +69,23 @@ setup(
     packages=find_namespace_packages(include=["dbt", "dbt.*", "flink", "flink.*"]),
     include_package_data=True,
     install_requires=[
-        "dbt-core~={}".format(dbt_core_version),
+        "dbt-adapters>=1.0.0,<2.0.0",
+        "dbt-common>=1.0.0,<2.0.0",
+        "dbt-core>=1.8.0",
         "requests<3.0.0",
     ],
     zip_safe=False,
     classifiers=[
-        "Development Status :: 5 - Production/Stable",
+        "Development Status :: 4 - Beta",
         "License :: OSI Approved :: Apache Software License",
         "Operating System :: Microsoft :: Windows",
         "Operating System :: MacOS :: MacOS X",
         "Operating System :: POSIX :: Linux",
-        "Programming Language :: Python :: 3.7",
-        "Programming Language :: Python :: 3.8",
         "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
     ],
-    python_requires=">=3.7",
+    python_requires=">=3.9",
 )
