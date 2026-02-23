@@ -133,3 +133,6 @@ dmypy.json
 
 # Logs
 logs/
+
+# Dev documentation (session notes, guides, summaries)
+docs/dev/
