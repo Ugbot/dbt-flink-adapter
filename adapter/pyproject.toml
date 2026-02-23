@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "dbt-flink-http-adapter"
 version = "0.1.0"
 description = "Hackathon HTTP adapter that routes dbt SQL execution through the Flink SQL proxy"
-requires-python = ">=3.9"
+requires-python = ">=3.13"
 dependencies = [
   "dbt-core>=1.4.0,<1.9.0",
   "httpx>=0.27.0",
