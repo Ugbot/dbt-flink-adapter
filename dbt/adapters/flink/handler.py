@@ -37,7 +37,35 @@ class FlinkCursor:
         self.result_buffer = []
 
     def cancel(self) -> None:
-        pass
+        """
+        Cancel the currently executing operation.
+
+        This attempts to cancel the Flink SQL Gateway operation if one is active.
+        Cancellation is best-effort and may not succeed for all operation types.
+
+        For batch queries: Cancellation typically succeeds
+        For streaming queries: May need to stop the Flink job separately
+
+        Raises:
+            Exception: If cancellation request fails
+        """
+        if self.last_operation is not None:
+            try:
+                logger.info(
+                    f"Cancelling operation: {self.last_operation.operation_handle}"
+                )
+                status = self.last_operation.cancel()
+                logger.info(
+                    f"Operation cancellation requested. Status: {status}"
+                )
+            except Exception as e:
+                logger.error(
+                    f"Failed to cancel operation {self.last_operation.operation_handle}: {e}"
+                )
+                raise
+        else:
+            logger.warning("No active operation to cancel")
+
 
     def close(self) -> None:
         pass

@@ -8,7 +8,12 @@ from typing import Optional, Any, Tuple
 # dbt-core 1.8+ imports (adapter decoupling)
 import dbt_common.exceptions  # noqa
 import yaml
-from dbt.adapters.contracts.connection import Credentials, Connection, ConnectionState
+from dbt.adapters.contracts.connection import (
+    Credentials,
+    Connection,
+    ConnectionState,
+    AdapterResponse,
+)
 from dbt.adapters.sql import SQLConnectionManager  # type: ignore
 from dbt.adapters.events.logging import AdapterLogger
 
@@ -16,6 +21,7 @@ from dbt.adapters.flink.handler import FlinkHandler, FlinkCursor
 from flink.sqlgateway.client import FlinkSqlGatewayClient
 from flink.sqlgateway.config import SqlGatewayConfig
 from flink.sqlgateway.session import SqlGatewaySession
+from flink.sqlgateway.heartbeat import HeartbeatManager
 
 logger = AdapterLogger("Flink")
 
@@ -33,6 +39,8 @@ class FlinkCredentials(Credentials):
     port: int
     session_name: str
     session_idle_timeout_s: int = 10 * 60
+    heartbeat_enabled: bool = True
+    heartbeat_interval_s: int = 60
 
     _ALIASES = {"session": "session_name"}
 
@@ -60,6 +68,11 @@ class FlinkConnectionManager(SQLConnectionManager):
     TYPE = "flink"
 
     session: SqlGatewaySession
+    heartbeat_manager: HeartbeatManager = None
+
+    def __init__(self, profile, mp_context=None):
+        super().__init__(profile, mp_context)
+        self.heartbeat_manager = HeartbeatManager()
 
     @contextmanager
     def exception_handler(self, sql: str):
@@ -94,6 +107,18 @@ class FlinkConnectionManager(SQLConnectionManager):
                 )
                 logger.info(f"Session created: {session.session_handle}")
                 FlinkConnectionManager._store_session_handle(session)
+
+            # Start heartbeat to keep session alive during long operations
+            if credentials.heartbeat_enabled and cls.heartbeat_manager:
+                cls.heartbeat_manager.start_heartbeat(
+                    session=session,
+                    interval_seconds=credentials.heartbeat_interval_s,
+                    enabled=True
+                )
+                logger.info(
+                    f"Session heartbeat started for {session.session_handle} "
+                    f"(interval: {credentials.heartbeat_interval_s}s)"
+                )
 
             connection.state = ConnectionState.OPEN
             connection.handle = FlinkHandler(session)
@@ -139,27 +164,75 @@ class FlinkConnectionManager(SQLConnectionManager):
             yaml.dump(content, file)
 
     @classmethod
-    def get_response(cls, cursor: FlinkCursor):
+    def get_response(cls, cursor: FlinkCursor) -> AdapterResponse:
         """
         Gets a cursor object and returns adapter-specific information
-        about the last executed command generally a AdapterResponse ojbect
-        that has items such as code, rows_affected,etc. can also just be a string ex. "OK"
-        if your cursor does not offer rich metadata.
+        about the last executed command generally a AdapterResponse object
+        that has items such as code, rows_affected, query_id, etc.
         """
-        return cursor.get_status()
+        status = cursor.get_status()
+
+        # Get operation handle as query_id if available
+        query_id = None
+        if cursor.last_operation is not None:
+            query_id = cursor.last_operation.operation_handle
+
+        return AdapterResponse(
+            _message=status,
+            code=status,
+            query_id=query_id,
+        )
+
+    def close(self, connection):
+        """
+        Close the connection and clean up resources.
+
+        Stops the heartbeat thread if active.
+        """
+        if connection.handle:
+            session = connection.handle.session
+            if session and session.session_handle:
+                # Stop heartbeat for this session
+                if self.heartbeat_manager:
+                    self.heartbeat_manager.stop_heartbeat(session.session_handle)
+                    logger.info(f"Stopped heartbeat for session {session.session_handle}")
+
+        connection.state = ConnectionState.CLOSED
+        return connection
 
     def cancel(self, connection):
         """
-        Gets a connection object and attempts to cancel any ongoing queries.
+        Cancel any ongoing queries on this connection.
+
+        Attempts to cancel the currently executing Flink SQL Gateway operation.
+        This is a best-effort operation:
+        - Batch queries: Usually can be cancelled successfully
+        - Streaming queries: May require stopping the Flink job separately
+
+        Args:
+            connection: Connection object with active operation to cancel
+
+        Note:
+            Cancellation may not be immediate. The operation will be marked
+            for cancellation, but may take time to actually stop.
         """
-        # ## Example ##
-        # tid = connection.handle.transaction_id()
-        # sql = "select cancel_transaction({})".format(tid)
-        # logger.debug("Cancelling query "{}" ({})".format(connection_name, pid))
-        # _, cursor = self.add_query(sql, "master")
-        # res = cursor.fetchone()
-        # logger.debug("Canceled query "{}": {}".format(connection_name, res))
-        pass
+        if connection.handle is None:
+            logger.warning("Cannot cancel: no active connection handle")
+            return
+
+        try:
+            # Get the current cursor from the connection handler
+            cursor = connection.handle.cursor()
+
+            # Attempt to cancel the operation
+            cursor.cancel()
+
+            logger.info(f"Successfully requested cancellation for connection")
+
+        except Exception as e:
+            logger.error(f"Error cancelling operation: {e}")
+            # Don't raise - cancellation is best-effort
+
 
     # supress adding BEGIN and COMMIT as Flink does not handle transactions
     def add_begin_query(self):

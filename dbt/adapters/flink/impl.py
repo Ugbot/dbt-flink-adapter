@@ -265,7 +265,19 @@ class FlinkAdapter(BaseAdapter):
 
     @classmethod
     def is_cancelable(cls) -> bool:
-        return False  # TODO
+        """
+        Indicate that this adapter supports query cancellation.
+
+        Flink SQL Gateway supports cancelling operations via the /cancel endpoint.
+        Cancellation is best-effort and works differently based on query type:
+
+        - Batch queries: Typically can be cancelled successfully
+        - Streaming queries: Operation is cancelled but may need to stop Flink job separately
+
+        Returns:
+            True (this adapter supports cancellation)
+        """
+        return True
 
     def list_relations_without_caching(self, schema_relation: BaseRelation) -> List[BaseRelation]:
         """

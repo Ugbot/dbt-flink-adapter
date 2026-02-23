@@ -21,25 +21,61 @@
 {% macro flink__create_table_as(temporary, relation, sql) -%}
   {% set type = config.get('type', None) %}
   {%- set sql_header = config.get('sql_header', none) -%}
+  {%- set execution_mode = config.get('execution_mode', 'batch') -%}
+
+  {# dbt-core 1.5+ model contracts support #}
+  {%- set contract_config = config.get('contract') -%}
+
+  {# If contract is enforced, validate columns match #}
+  {%- if contract_config.enforced -%}
+    {{ get_assert_columns_equivalent(sql) }}
+  {%- endif -%}
+
+  {# Collect connector properties from multiple sources #}
   {% set connector_properties = config.get('default_connector_properties', {}) %}
   {% set _dummy = connector_properties.update(config.get('connector_properties', {})) %}
+  {% set _dummy = connector_properties.update(config.get('properties', {})) %}
+
+  {# Validate batch mode configuration #}
+  {% if execution_mode == 'batch' %}
+    {{ validate_batch_mode(execution_mode, connector_properties) }}
+  {% endif %}
+
+  {# If no connector specified, use blackhole as default for testing #}
+  {% if not connector_properties.get('connector') %}
+    {% set _dummy = connector_properties.update({
+      'connector': 'blackhole'
+    }) %}
+  {% endif %}
+
   {% set execution_config = config.get('default_execution_config', {}) %}
   {% set _dummy = execution_config.update(config.get('execution_config', {})) %}
   {% set upgrade_mode = config.get('upgrade_mode', 'stateless') %}
   {% set job_state = config.get('job_state', 'running') %}
 
   {{ sql_header if sql_header is not none }}
-  /** upgrade_mode('{{upgrade_mode}}') */ /** job_state('{{job_state}}') */
-  {% if execution_config %}/** execution_config('{% for cfg_name in execution_config %}{{cfg_name}}={{execution_config[cfg_name]}}{% if not loop.last %};{% endif %}{% endfor %}') */{% endif %}
+
+  {# Step 1: DROP TABLE IF EXISTS - executed separately #}
+  {% call statement('drop_table') -%}
+    /** mode('{{execution_mode}}') */ /** upgrade_mode('{{upgrade_mode}}') */ /** job_state('{{job_state}}') */
+    {% if execution_config %}/** execution_config('{% for cfg_name in execution_config %}{{cfg_name}}={{execution_config[cfg_name]}}{% if not loop.last %};{% endif %}{% endfor %}') */{% endif %}
+    drop {% if temporary: -%}temporary {%- endif %}table if exists {{ this.render() }}
+  {%- endcall %}
+
+  {# Step 2: CREATE TABLE AS SELECT with connector #}
+  {# If contract is defined, use explicit column definitions from contract #}
+  /** mode('{{execution_mode}}') */ /** upgrade_mode('{{upgrade_mode}}') */ /** job_state('{{job_state}}') */
   /** drop_statement('drop {% if temporary: -%}temporary {%- endif %}table if exists `{{ this.render() }}`') */
-  create {% if temporary: -%}temporary {%- endif %}table
-    {{ this.render() }}
-    {% if type %}/** mode('{{type}}')*/{% endif %}
+  create {% if temporary: -%}temporary {%- endif %}table {{ this.render() }}
+  {%- if contract_config.enforced -%}
+    {{ get_table_columns_and_constraints() }}
+  {%- endif %}
   with (
-    {% for property_name in connector_properties %} '{{ property_name }}' = '{{ connector_properties[property_name] }}'{% if not loop.last %},{% endif %}
+    {% for property_name in connector_properties -%}
+    '{{ property_name }}' = '{{ connector_properties[property_name] }}'
+    {%- if not loop.last %},{% endif %}
     {% endfor %}
   )
-  as (
+  as
     {{ sql }}
-  );
 {%- endmacro %}
