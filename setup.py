@@ -74,6 +74,14 @@ setup(
         "dbt-core>=1.8.0",
         "requests<3.0.0",
     ],
+    extras_require={
+        "ververica-tests": [
+            "python-dotenv>=1.0.0",
+            "pydantic-settings>=2.1.0",
+            "pytest-asyncio>=0.21.0",
+            "httpx>=0.27.0",
+        ],
+    },
     zip_safe=False,
     classifiers=[
         "Development Status :: 4 - Beta",
