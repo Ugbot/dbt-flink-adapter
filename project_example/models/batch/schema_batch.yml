@@ -1,0 +1,298 @@
+version: 2
+
+models:
+  - name: batch_kafka_bounded
+    description: |
+      **Batch Mode: Bounded Kafka Source**
+
+      Demonstrates reading historical events from Kafka in batch mode.
+
+      Key Configuration:
+      - `scan.startup.mode: earliest-offset` - Start from beginning
+      - `scan.bounded.mode: latest-offset` - End at latest offset (bounded!)
+      - `execution_mode: batch` - Use batch execution
+
+      Use Case: Historical backfill or one-time processing of Kafka topic data.
+
+      Behavior:
+      - Reads all events from earliest to latest offset at job start
+      - Job completes when reaching latest offset
+      - Does NOT continue consuming new events (bounded)
+    config:
+      materialized: table
+      execution_mode: batch
+    columns:
+      - name: event_id
+        description: Unique event identifier extracted from JSON
+      - name: user_id
+        description: User who triggered the event
+      - name: event_type
+        description: Type of event
+      - name: event_time
+        description: Event timestamp
+
+  - name: batch_filesystem_partitioned
+    description: |
+      **Batch Mode: Partitioned Filesystem Source**
+
+      Efficiently reads partitioned Parquet files with automatic partition pruning.
+
+      Key Features:
+      - Columnar Parquet format for batch efficiency
+      - Partition pruning (WHERE clause filters partitions)
+      - Naturally bounded (all files are finite)
+      - Optimized aggregation with sort shuffle
+
+      Use Case: Weekly reporting on historical partitioned event data.
+
+      Performance:
+      - Only scans last 7 days of partitions
+      - Vectorized Parquet reading
+      - Efficient memory usage in batch mode
+    config:
+      materialized: table
+      execution_mode: batch
+
+  - name: batch_jdbc_partitioned
+    description: |
+      **Batch Mode: Parallel Partitioned JDBC Scan**
+
+      Reads large database tables using parallel partitioned scanning.
+
+      Partition Configuration:
+      - `scan.partition.column: order_id` - Numeric column for partitioning
+      - `scan.partition.num: 8` - 8 parallel read partitions
+      - `scan.fetch-size: 2000` - Batch fetch 2000 rows at a time
+
+      Use Case: Extract and aggregate large historical order data from PostgreSQL.
+
+      Parallelism:
+      - Splits table into 8 ranges based on order_id
+      - Each partition reads concurrently
+      - Efficient for tables with millions of rows
+
+      Performance Tips:
+      - Adjust partition count based on table size and DB capacity
+      - Ensure partition column has even distribution
+      - Monitor database load during execution
+    config:
+      materialized: table
+      execution_mode: batch
+    columns:
+      - name: order_date
+        description: Date of order (aggregation key)
+      - name: customer_id
+        description: Customer identifier
+      - name: order_count
+        description: Number of orders for this customer on this date
+      - name: total_amount
+        description: Total order amount
+      - name: avg_amount
+        description: Average order amount
+
+  - name: batch_datagen_bounded
+    description: |
+      **Batch Mode: Bounded Data Generation**
+
+      Generates exactly 1 million synthetic events for testing batch processing.
+
+      Critical Property:
+      - `number-of-rows: 1000000` - Makes datagen bounded (finite)
+
+      Without this property:
+      - Source would generate indefinitely (unbounded)
+      - Job would never complete
+      - Only suitable for streaming mode
+
+      Use Case:
+      - Performance testing of batch aggregations
+      - Development and testing without external dependencies
+      - Load testing Flink batch execution
+
+      Generation Characteristics:
+      - Deterministic sequence: event_id from 1 to 1,000,000
+      - Random users: 10,000 unique user IDs
+      - Generation rate: 10,000 events/second
+      - Total generation time: ~100 seconds
+    config:
+      materialized: table
+      execution_mode: batch
+
+  - name: batch_incremental_daily
+    description: |
+      **Batch Incremental: Daily Partition Processing**
+
+      Combines batch execution with incremental INSERT OVERWRITE strategy.
+
+      Strategy:
+      - `incremental_strategy: insert_overwrite`
+      - `partition_by: [processing_date]`
+      - Only replaces today's partition on each run
+
+      Workflow:
+      1. **First run**: Processes last 7 days of historical data
+      2. **Daily runs**: Only process and replace today's partition
+      3. **Idempotent**: Rerunning same day gives same result
+
+      Use Case:
+      - Daily ETL jobs with late-arriving data
+      - Scheduled batch processing (cron/Airflow)
+      - Partition backfill scenarios
+
+      Benefits:
+      - Efficient: Only processes affected partition
+      - Bounded: Each run is a complete batch job
+      - Idempotent: Safe to retry failed jobs
+      - Historical data preserved (other partitions unchanged)
+
+      Batch Mode Advantages:
+      - Sort-based shuffle (efficient aggregation)
+      - Lower memory footprint vs streaming
+      - Guaranteed ordering within partitions
+      - Job completes (observable progress)
+    config:
+      materialized: incremental
+      incremental_strategy: insert_overwrite
+      partition_by: ['processing_date']
+      execution_mode: batch
+
+# Documentation for batch mode concepts
+docs:
+  - name: batch_mode_execution
+    description: |
+      ## Flink Batch Mode Execution
+
+      Batch mode (`execution.runtime-mode=batch`) provides optimized execution for bounded (finite) datasets.
+
+      ### Key Differences: Batch vs Streaming
+
+      | Aspect | Batch | Streaming |
+      |--------|-------|-----------|
+      | **Data** | Bounded (finite) | Unbounded (continuous) |
+      | **Scheduling** | Sequential stages | All tasks concurrent |
+      | **Shuffle** | Blocking (materialized) | Pipelined (immediate) |
+      | **State** | Per-key, discarded after | Managed StateBackend |
+      | **Ordering** | Guaranteed | No guarantees |
+      | **Completion** | Job finishes | Runs indefinitely |
+
+      ### When to Use Batch Mode
+
+      Use **batch mode** for:
+      - Historical data processing (ETL, backfills)
+      - Periodic aggregations (daily/weekly reports)
+      - Bounded Kafka processing (earliest to latest)
+      - File-based processing (Parquet, ORC, CSV)
+      - Database extracts (JDBC bounded scans)
+
+      Use **streaming mode** for:
+      - Real-time analytics
+      - Continuous monitoring
+      - Event-driven processing
+      - Low-latency requirements
+
+      ### Configuration
+
+      Set batch mode in dbt model config:
+      ```yaml
+      {{ config(
+          execution_mode='batch',
+          properties={
+              'connector': 'kafka',
+              'scan.bounded.mode': 'latest-offset'
+          }
+      ) }}
+      ```
+
+  - name: bounded_sources
+    description: |
+      ## Bounded Sources for Batch Mode
+
+      Batch mode requires all sources to be bounded (finite).
+
+      ### Kafka
+
+      ```yaml
+      properties:
+        connector: kafka
+        scan.startup.mode: earliest-offset
+        scan.bounded.mode: latest-offset  # REQUIRED for batch
+      ```
+
+      **scan.bounded.mode options**:
+      - `latest-offset` - End at latest offsets when job starts
+      - `group-offsets` - End at consumer group committed offsets
+      - `timestamp` - End at specific timestamp
+      - `specific-offsets` - End at specified partition offsets
+
+      ### DataGen
+
+      ```yaml
+      properties:
+        connector: datagen
+        number-of-rows: '1000000'  # REQUIRED for bounded
+      ```
+
+      Without `number-of-rows`, datagen is unbounded (infinite).
+
+      ### Filesystem
+
+      Naturally bounded - reads all files in path once.
+
+      ### JDBC
+
+      Naturally bounded - scans entire table (or WHERE filtered subset).
+
+      Enable parallel scanning:
+      ```yaml
+      properties:
+        connector: jdbc
+        scan.partition.column: id
+        scan.partition.num: '8'
+        scan.partition.lower-bound: '0'
+        scan.partition.upper-bound: '10000000'
+      ```
+
+  - name: batch_optimization
+    description: |
+      ## Batch Mode Performance Optimization
+
+      ### Shuffle Configuration
+
+      Flink uses **sort shuffle** by default (best for most cases):
+      - Single file per partition
+      - Concurrent reads
+      - Excellent HDD performance
+      - Lower file descriptor usage
+
+      ### Memory Tuning
+
+      Increase batch shuffle memory for large jobs:
+      ```yaml
+      execution_config:
+        taskmanager.memory.framework.off-heap.batch-shuffle.size: '256mb'
+        taskmanager.network.memory.fraction: '0.2'
+      ```
+
+      ### File Format Selection
+
+      For filesystem sources, prefer columnar formats:
+      - **Parquet**: Columnar, compressed, schema evolution
+      - **ORC**: Vectorized reading, predicate pushdown
+      - **Avro**: Row-based, schema evolution
+
+      ### Parallelism
+
+      Configure appropriate parallelism for batch:
+      ```yaml
+      execution_config:
+        table.exec.resource.default-parallelism: '16'
+      ```
+
+      ### Compression
+
+      Enable spill compression (default since 1.15):
+      ```yaml
+      execution_config:
+        table.exec.spill-compression.enabled: 'true'
+        table.exec.spill-compression.block-size: '64kb'
+      ```

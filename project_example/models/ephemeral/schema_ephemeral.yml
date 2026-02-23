@@ -1,0 +1,343 @@
+version: 2
+
+models:
+  - name: stg_events_clean
+    description: |
+      **EPHEMERAL MODEL - Event Data Cleaning**
+
+      This model cleans and standardizes raw event data without creating a physical table.
+      The SQL is interpolated as a Common Table Expression (CTE) in downstream models.
+
+      **Materialization**: ephemeral (no database object)
+
+      **Transformations**:
+      - Standardizes event types to lowercase
+      - Casts fields to appropriate types
+      - Handles null values with defaults
+      - Filters out invalid/old events
+      - Derives date and hour partitions
+
+      **Referenced By**:
+      - `fact_user_activity` (joins with user data)
+      - Any model using `{{ ref('stg_events_clean') }}`
+
+      **Why Ephemeral**:
+      - Simple transformations (cast, trim, lowercase)
+      - Only used as input to other models
+      - No need to query directly
+      - Saves storage (no physical table created)
+
+      **Performance Note**:
+      SQL is duplicated in every model that references this.
+      For expensive transformations, consider using `table` or `view` instead.
+
+      **Testing Limitation**:
+      Cannot write dbt tests for ephemeral models (no object to test).
+      Tests should be written on downstream models instead.
+    config:
+      materialized: ephemeral
+
+  - name: stg_user_profiles_enriched
+    description: |
+      **EPHEMERAL MODEL - Enriched User Profiles**
+
+      Joins user data with profiles and standardizes fields.
+      Reused across multiple downstream marts without duplicating join logic.
+
+      **Materialization**: ephemeral (no database object)
+
+      **Transformations**:
+      - Joins users with user_profiles
+      - Standardizes name fields
+      - Handles null values with defaults
+      - Computes derived fields (days_since_signup, user_status)
+
+      **Referenced By**:
+      - `fact_user_activity` (provides user context for events)
+      - `dim_users` (if implemented - provides base user data)
+
+      **Why Ephemeral**:
+      - Intermediate join used by multiple models
+      - Avoids duplicate join logic
+      - No need to materialize intermediate result
+      - Reduces storage costs
+
+      **Best Practice**:
+      This pattern (ephemeral staging → materialized mart) is ideal for:
+      - Shared transformation logic
+      - Clean separation of staging and marts layers
+      - DRY (Don't Repeat Yourself) principle
+    config:
+      materialized: ephemeral
+
+  - name: fact_user_activity
+    description: |
+      **FACT TABLE - User Activity**
+
+      Materialized fact table combining event data with user profiles.
+      References TWO ephemeral models that are interpolated as CTEs.
+
+      **Materialization**: table (filesystem connector, Parquet format)
+
+      **Execution Mode**: batch
+
+      **Ephemeral Dependencies**:
+      1. `stg_events_clean` - Provides cleaned event data
+      2. `stg_user_profiles_enriched` - Provides user context
+
+      **Compiled SQL Structure**:
+      ```sql
+      -- dbt automatically generates this:
+      WITH stg_events_clean AS (
+        -- SQL from stg_events_clean.sql
+        SELECT event_id, user_id, event_type, ...
+        FROM raw.events
+        WHERE event_timestamp >= CURRENT_TIMESTAMP - INTERVAL '30' DAY
+      ),
+      stg_user_profiles_enriched AS (
+        -- SQL from stg_user_profiles_enriched.sql
+        SELECT u.user_id, u.email, p.subscription_tier, ...
+        FROM app.users u
+        LEFT JOIN app.user_profiles p ON u.user_id = p.user_id
+      )
+      SELECT
+        e.event_id,
+        u.user_id,
+        u.username,
+        e.event_type,
+        ...
+      FROM stg_events_clean e
+      INNER JOIN stg_user_profiles_enriched u
+        ON e.user_id = u.user_id
+      ```
+
+      **Data Lineage**:
+      - **Sources**: raw.events, app.users, app.user_profiles
+      - **Staging (ephemeral)**: stg_events_clean, stg_user_profiles_enriched
+      - **Mart (materialized)**: fact_user_activity
+
+      **Use Cases**:
+      - User behavior analytics
+      - Cohort analysis by user tenure
+      - Engagement tracking
+      - Premium vs free user analysis
+
+      **Refresh Strategy**:
+      Run daily in batch mode to process previous day's events.
+
+      **Performance**:
+      - Parquet format for efficient storage
+      - Batch mode for bounded data processing
+      - Filters applied in ephemeral CTEs pushed down by Flink optimizer
+    config:
+      materialized: table
+      execution_mode: batch
+    columns:
+      - name: event_id
+        description: Unique identifier for the event
+      - name: event_date
+        description: Date of event (YYYY-MM-DD)
+      - name: event_hour
+        description: Hour of event (HH)
+      - name: user_id
+        description: User who triggered the event
+      - name: username
+        description: Username (from ephemeral user profile)
+      - name: email
+        description: User email (cleaned, lowercase)
+      - name: event_type
+        description: Type of event (page_view, click, purchase, etc.)
+      - name: event_category
+        description: Category grouping for event
+      - name: session_id
+        description: Session identifier for event grouping
+      - name: user_status
+        description: Computed user status (premium, verified, active, inactive)
+      - name: subscription_tier
+        description: User's subscription tier (free, basic, premium)
+      - name: user_cohort
+        description: User cohort based on tenure (new, recent, established, tenured)
+      - name: engagement_status
+        description: Recent engagement level (active_today, active_week, active_month, inactive)
+      - name: dbt_created_at
+        description: Timestamp when record was created by dbt
+
+# Documentation for ephemeral models concept
+docs:
+  - name: ephemeral_models
+    description: |
+      ## Ephemeral Models in dbt-flink
+
+      Ephemeral models are a special materialization type that do NOT create physical database objects.
+      Instead, they are interpolated as Common Table Expressions (CTEs) in models that reference them.
+
+      ### How It Works
+
+      **1. Define Ephemeral Model**:
+      ```sql
+      -- models/staging/stg_users.sql
+      {{ config(materialized='ephemeral') }}
+      SELECT
+        user_id,
+        LOWER(email) as email
+      FROM raw.users
+      ```
+
+      **2. Reference in Downstream Model**:
+      ```sql
+      -- models/marts/dim_users.sql
+      {{ config(materialized='table') }}
+      SELECT * FROM {{ ref('stg_users') }}
+      ```
+
+      **3. Compiled SQL** (automatic):
+      ```sql
+      WITH stg_users AS (
+        SELECT user_id, LOWER(email) as email
+        FROM raw.users
+      )
+      SELECT * FROM stg_users
+      ```
+
+      ### When to Use Ephemeral
+
+      **✅ Good Use Cases**:
+      - Simple transformations (cast, trim, case statements)
+      - Intermediate logic used by multiple models
+      - Staging layer transformations
+      - Avoiding duplicate SQL across models
+
+      **❌ Avoid For**:
+      - Expensive transformations (complex joins, aggregations)
+      - Models that need to be tested
+      - Models that need to be queried directly
+      - Deeply nested dependencies (CTEs become huge)
+
+      ### Advantages
+
+      - **No Storage Cost**: No physical table created
+      - **DRY Principle**: Share logic without duplication
+      - **Cleaner Lineage**: Explicit dependencies in DAG
+      - **Faster Development**: No table management overhead
+
+      ### Limitations
+
+      - **Cannot Query**: No database object exists
+      - **Cannot Test**: dbt tests require physical objects
+      - **No Documentation**: Won't appear in data catalog
+      - **Duplicated Execution**: SQL runs in every dependent model
+
+      ### Performance Considerations
+
+      **Flink Optimizer Behavior**:
+      - May or may not cache CTE results
+      - Filter pushdown applies to CTEs
+      - Projection pushdown applies to CTEs
+      - Join reordering considers CTEs
+
+      **Best Practice**:
+      ```yaml
+      # ✅ Good: Simple transformation
+      stg_events:
+        materialized: ephemeral
+
+      # ❌ Bad: Expensive aggregation (use table instead)
+      agg_user_stats:
+        materialized: table  # Not ephemeral!
+      ```
+
+      ### Testing Strategy
+
+      Since ephemeral models cannot be tested directly, test downstream models:
+
+      ```yaml
+      # ❌ Cannot test ephemeral model
+      - name: stg_users
+        tests:  # This will fail!
+          - unique:
+              column_name: user_id
+
+      # ✅ Test downstream materialized model
+      - name: dim_users
+        tests:
+          - unique:
+              column_name: user_id
+      ```
+
+      ### Migration Pattern
+
+      **Promoting Ephemeral to Table**:
+      ```yaml
+      # Before: Used as intermediate transformation
+      stg_users:
+        materialized: ephemeral
+
+      # After: Needs to be queried/tested
+      stg_users:
+        materialized: table  # or view
+      ```
+
+      Simply change the config - dbt handles the rest!
+
+  - name: ephemeral_vs_view
+    description: |
+      ## Ephemeral vs View: Which to Choose?
+
+      Both ephemeral models and views avoid storing data, but behave differently.
+
+      ### Comparison
+
+      | Aspect | Ephemeral | View |
+      |--------|-----------|------|
+      | **Database Object** | No | Yes (CREATE VIEW) |
+      | **Queryable** | No | Yes |
+      | **Testable** | No | Yes |
+      | **Documentation** | No | Yes |
+      | **Recomputation** | Every reference | Every query |
+      | **Storage** | None | None (just view definition) |
+      | **Use in BI Tools** | No | Yes |
+
+      ### Decision Tree
+
+      ```
+      Do you need to query this model directly?
+      ├─ Yes → Use VIEW
+      └─ No
+          ├─ Do you need to test this model?
+          │  ├─ Yes → Use VIEW
+          │  └─ No
+          │     ├─ Is this an expensive transformation?
+          │     │  ├─ Yes → Use TABLE
+          │     │  └─ No → Use EPHEMERAL
+      ```
+
+      ### Examples
+
+      **Use Ephemeral**:
+      ```sql
+      -- Simple field cleaning (cheap, reusable)
+      {{ config(materialized='ephemeral') }}
+      SELECT
+        LOWER(TRIM(email)) as email,
+        UPPER(country) as country
+      FROM raw.users
+      ```
+
+      **Use View**:
+      ```sql
+      -- Need to query from BI tool
+      {{ config(materialized='view') }}
+      SELECT * FROM {{ ref('stg_users') }}
+      ```
+
+      **Use Table**:
+      ```sql
+      -- Expensive aggregation
+      {{ config(materialized='table') }}
+      SELECT
+        user_id,
+        COUNT(*) as event_count,
+        AVG(session_duration) as avg_duration
+      FROM events
+      GROUP BY user_id
+      ```

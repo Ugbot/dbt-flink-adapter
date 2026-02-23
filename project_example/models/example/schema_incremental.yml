@@ -1,0 +1,112 @@
+version: 2
+
+models:
+  - name: incremental_events
+    description: |
+      Basic incremental model using APPEND strategy.
+      Demonstrates simple INSERT INTO for streaming event processing.
+    config:
+      materialized: incremental
+      incremental_strategy: append
+    columns:
+      - name: event_id
+        description: Unique event identifier
+      - name: event_type
+        description: Type of event (login, page_view, purchase, logout)
+      - name: user_id
+        description: User who triggered the event
+      - name: event_time
+        description: Timestamp when event occurred
+      - name: processed_at
+        description: Timestamp when event was processed by dbt
+
+  - name: incremental_overwrite_full
+    description: |
+      INSERT OVERWRITE strategy test - full table replacement.
+
+      On each run, this model COMPLETELY REPLACES all data in the target table.
+      Useful for:
+      - Snapshot tables that should reflect current state
+      - Aggregations that recalculate from scratch
+      - Tables where historical data is not needed
+
+      Use case: Hourly metrics dashboard showing only current hour.
+    config:
+      materialized: incremental
+      incremental_strategy: insert_overwrite
+    columns:
+      - name: metric_hour
+        description: Hour for which metrics are calculated
+      - name: metric_name
+        description: Name of the metric (active_users, page_views, purchases)
+      - name: metric_value
+        description: Calculated metric value
+      - name: calculated_at
+        description: Timestamp when metric was calculated
+
+  - name: incremental_overwrite_partitioned
+    description: |
+      INSERT OVERWRITE strategy test - partition-aware replacement.
+
+      On each run, this model ONLY REPLACES the affected partition(s).
+      Historical partitions are left intact.
+
+      Flink generates: INSERT OVERWRITE table PARTITION (event_date='2025-11-16')
+
+      Advantages:
+      - Much more efficient than full table replacement
+      - Preserves historical data in other partitions
+      - Perfect for daily/hourly batch processing
+      - Idempotent - rerunning same partition gives same result
+
+      Use case: Daily event aggregations where each day is independent.
+    config:
+      materialized: incremental
+      incremental_strategy: insert_overwrite
+      partition_by: ['event_date']
+    columns:
+      - name: event_date
+        description: Partition key - date of events (YYYY-MM-DD)
+      - name: event_type
+        description: Type of event being aggregated
+      - name: event_count
+        description: Number of events of this type on this date
+      - name: total_duration_seconds
+        description: Sum of event durations
+      - name: aggregated_at
+        description: Timestamp when aggregation was performed
+
+  - name: incremental_merge_upsert
+    description: |
+      MERGE strategy test using connector-level UPSERT.
+
+      Flink doesn't have native MERGE statement, but achieves UPSERT through connectors:
+      - upsert-kafka: Kafka connector with UPSERT semantics
+      - JDBC: Database connector with PRIMARY KEY constraint
+      - upsert-jdbc: Explicit UPSERT JDBC connector
+
+      The connector handles merge logic automatically on INSERT:
+      - If primary key exists: UPDATE the row
+      - If primary key doesn't exist: INSERT new row
+
+      Requirements:
+      1. Table must have PRIMARY KEY constraint in DDL
+      2. Connector must support UPSERT operations
+      3. unique_key config must match PRIMARY KEY column(s)
+
+      Use case: Maintaining current state of slowly changing dimensions.
+    config:
+      materialized: incremental
+      incremental_strategy: merge
+      unique_key: user_id
+    columns:
+      - name: user_id
+        description: Primary key - unique user identifier
+      - name: user_name
+        description: User's full name (can be updated)
+      - name: email
+        description: User's email address (can be updated)
+      - name: login_count
+        description: Total number of logins (incrementing)
+      - name: last_updated
+        description: Timestamp of last profile update

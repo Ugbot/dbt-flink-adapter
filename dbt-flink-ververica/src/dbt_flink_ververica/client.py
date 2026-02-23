@@ -506,6 +506,128 @@ class VervericaClient:
             logger.error(f"Failed to delete deployment: {e}")
             raise
 
+    def start_deployment(
+        self,
+        namespace: str,
+        deployment_id: str,
+        restore_strategy: str = "NONE",
+    ) -> Dict[str, Any]:
+        """Start a deployment by creating a job for it.
+
+        Calls the v2 ``jobs:start`` endpoint which transitions the deployment
+        from a stopped/created state into RUNNING.
+
+        Args:
+            namespace: Namespace name
+            deployment_id: Deployment ID (UUID)
+            restore_strategy: How to restore state — NONE, LATEST_STATE,
+                or LATEST_SAVEPOINT. Defaults to NONE for fresh starts.
+
+        Returns:
+            Job response dict from the API
+
+        Raises:
+            httpx.HTTPStatusError: If API request fails
+            ValueError: If API returns error envelope
+        """
+        self._check_auth_token()
+
+        logger.info(f"Starting deployment: {deployment_id}")
+
+        url = f"/api/v2/namespaces/{namespace}/jobs:start"
+        payload: Dict[str, Any] = {
+            "deploymentId": deployment_id,
+            "restoreStrategy": {"kind": restore_strategy},
+        }
+
+        logger.debug(f"POST {url} payload={payload}")
+
+        try:
+            response = self.client.post(url, json=payload)
+            data = self._unwrap_response(response)
+
+            job_id = data.get("jobId", data.get("id", "unknown"))
+            logger.info(f"Job started for deployment {deployment_id}: job={job_id}")
+            return data
+
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Failed to start deployment {deployment_id}: {e}")
+            logger.error(f"Response: {e.response.text}")
+            raise
+
+    def stop_job(
+        self,
+        namespace: str,
+        job_id: str,
+        stop_strategy: str = "NONE",
+    ) -> Dict[str, Any]:
+        """Stop a running job.
+
+        Args:
+            namespace: Namespace name
+            job_id: Job ID (UUID)
+            stop_strategy: NONE (cancel immediately), STOP_WITH_SAVEPOINT,
+                or STOP_WITH_DRAIN
+
+        Returns:
+            Job response dict from the API
+
+        Raises:
+            httpx.HTTPStatusError: If API request fails
+            ValueError: If API returns error envelope
+        """
+        self._check_auth_token()
+
+        logger.info(f"Stopping job: {job_id} (strategy={stop_strategy})")
+
+        url = f"/api/v2/namespaces/{namespace}/jobs/{job_id}:stop"
+        payload = {"stopStrategy": stop_strategy}
+
+        logger.debug(f"POST {url}")
+
+        try:
+            response = self.client.post(url, json=payload)
+            data = self._unwrap_response(response)
+            logger.info(f"Job stopped: {job_id}")
+            return data
+
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Failed to stop job {job_id}: {e}")
+            logger.error(f"Response: {e.response.text}")
+            raise
+
+    def list_jobs(
+        self,
+        namespace: str,
+        deployment_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """List jobs in a namespace, optionally filtered by deployment.
+
+        Args:
+            namespace: Namespace name
+            deployment_id: Optional deployment ID to filter by
+
+        Returns:
+            List of job dicts from the API
+        """
+        self._check_auth_token()
+
+        url = f"/api/v2/namespaces/{namespace}/jobs"
+
+        logger.debug(f"GET {url}")
+
+        response = self.client.get(url)
+        body = response.json()
+
+        jobs: List[Dict[str, Any]] = body.get("data", body.get("jobs", []))
+        if not isinstance(jobs, list):
+            jobs = []
+
+        if deployment_id:
+            jobs = [j for j in jobs if j.get("deploymentId") == deployment_id]
+
+        return jobs
+
     def _sanitize_payload_for_logging(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Sanitize payload for logging by truncating SQL scripts.
 

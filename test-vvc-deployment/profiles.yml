@@ -1,0 +1,13 @@
+test_vvc:
+  outputs:
+    dev:
+      type: flink
+      host: localhost
+      port: 8083
+      database: default_catalog
+      schema: default_database
+      session_name: dbt_test_vvc
+      session_idle_timeout: 600
+      execution_mode: streaming
+
+  target: dev

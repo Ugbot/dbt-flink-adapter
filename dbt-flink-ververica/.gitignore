@@ -1,0 +1,75 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Testing
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Configuration files (may contain secrets)
+dbt-flink-ververica.toml
+*.toml
+!dbt-flink-ververica.toml.example
+
+# Logs
+*.log
+
+# dbt artifacts
+target/
+dbt_packages/
+logs/
+
+# Compiled output
+*.jar
+*.class
+
+# Maven (for JAR packaging)
+target-java/
+.m2/
+
+# OpenAPI generated code
+generated/

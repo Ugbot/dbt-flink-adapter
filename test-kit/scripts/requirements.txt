@@ -1,0 +1,14 @@
+# Requirements for test-kit scripts
+# Install with: pip install -r requirements.txt
+
+# HTTP client for SQL Gateway testing
+requests>=2.31.0
+
+# Apache Flink Python API
+apache-flink==1.20.0
+
+# Kafka client
+kafka-python>=2.0.0
+
+# Fake data generation
+faker>=20.0.0

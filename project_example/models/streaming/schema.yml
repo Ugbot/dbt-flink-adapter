@@ -1,0 +1,148 @@
+version: 2
+
+models:
+  - name: 01_datagen_source
+    description: |
+      Streaming source table using Flink's datagen connector.
+      Generates 10 events per second with synthetic data for testing.
+
+      **Watermark**: 5-second allowed lateness for out-of-order events
+      **Connector**: datagen (built-in test data generator)
+    columns:
+      - name: event_id
+        description: Sequence number (1 to 1,000,000)
+      - name: user_id
+        description: Random user identifier (10 characters)
+      - name: event_type
+        description: Random event type (15 characters)
+      - name: event_time
+        description: Event timestamp (watermarked column)
+      - name: amount
+        description: Random amount between 1.00 and 999.99
+
+  - name: 02_tumbling_window_agg
+    description: |
+      Tumbling window aggregation demo.
+
+      **Window Type**: Tumbling (non-overlapping)
+      **Window Size**: 1 minute
+      **Aggregations**: COUNT, SUM
+      **Group By**: user_id
+
+      Use case: Regular interval reporting (e.g., events per minute per user)
+    columns:
+      - name: window_start
+        description: Window start timestamp
+      - name: window_end
+        description: Window end timestamp
+      - name: user_id
+        description: User identifier
+      - name: event_count
+        description: Number of events in the window
+      - name: total_amount
+        description: Sum of amounts in the window
+
+  - name: 03_hopping_window_agg
+    description: |
+      Hopping (sliding) window aggregation demo.
+
+      **Window Type**: Hopping (overlapping)
+      **Window Size**: 5 minutes
+      **Slide Interval**: 1 minute
+      **Aggregations**: COUNT, AVG
+
+      Use case: Moving averages, trend detection
+    columns:
+      - name: window_start
+        description: Window start timestamp
+      - name: window_end
+        description: Window end timestamp
+      - name: event_count
+        description: Number of events in the 5-minute window
+      - name: avg_amount
+        description: Average amount in the 5-minute window
+
+  - name: 04_session_window_agg
+    description: |
+      Session window aggregation demo.
+
+      **Window Type**: Session (activity-based, dynamic size)
+      **Session Gap**: 30 seconds
+      **Aggregations**: COUNT, SUM, Duration calculation
+      **Group By**: user_id
+
+      Use case: User behavior analysis, session tracking
+    columns:
+      - name: window_start
+        description: Session start timestamp
+      - name: window_end
+        description: Session end timestamp
+      - name: user_id
+        description: User identifier
+      - name: session_duration_ms
+        description: Session duration in milliseconds
+      - name: event_count
+        description: Number of events in the session
+      - name: total_amount
+        description: Total amount during the session
+
+  - name: 05_cumulative_window_agg
+    description: |
+      Cumulative window aggregation demo (Flink 1.20+ feature).
+
+      **Window Type**: Cumulative (progressive growth)
+      **Step Size**: 1 hour
+      **Max Window**: 1 day (24 hours)
+      **Aggregations**: COUNT, SUM, COUNT DISTINCT
+
+      Produces windows: [0-1h], [0-2h], [0-3h], ..., [0-24h]
+      Resets at the start of each day.
+
+      Use case: Daily running totals, progressive dashboards
+    columns:
+      - name: window_start
+        description: Window start timestamp (day boundary)
+      - name: window_end
+        description: Window end timestamp (grows hourly)
+      - name: cumulative_count
+        description: Cumulative count from day start
+      - name: cumulative_amount
+        description: Cumulative sum from day start
+      - name: unique_users
+        description: Count of distinct users from day start
+
+  - name: kafka_events_source
+    description: |
+      Kafka source table example.
+
+      **Connector**: Kafka
+      **Topic**: events
+      **Format**: JSON
+      **Watermark**: 5-second allowed lateness
+
+      Note: Requires Kafka to be running and topic 'events' to exist.
+    columns:
+      - name: event_id
+        description: Event identifier
+      - name: user_id
+        description: User identifier
+      - name: event_type
+        description: Type of event
+      - name: event_time
+        description: Event timestamp (watermarked column)
+
+  - name: event_counts_by_minute
+    description: |
+      Example Kafka sink: tumbling window aggregation written to Kafka.
+
+      Reads from kafka_events_source and aggregates by 1-minute windows,
+      writing results to the 'event_counts' Kafka topic.
+    columns:
+      - name: window_start
+        description: Window start timestamp
+      - name: window_end
+        description: Window end timestamp
+      - name: user_id
+        description: User identifier
+      - name: event_count
+        description: Events per user per minute

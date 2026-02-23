@@ -1,0 +1,211 @@
+version: 2
+
+models:
+  - name: mt_continuous_user_metrics
+    description: |
+      **MATERIALIZED TABLE - CONTINUOUS Refresh Mode**
+
+      Real-time user activity metrics with 30-second freshness guarantee.
+
+      **Refresh Strategy**: CONTINUOUS (streaming)
+      - Background streaming job continuously updates metrics
+      - Data visible with minimal lag (~30 seconds)
+      - Ideal for real-time dashboards
+
+      **Configuration**:
+      - `freshness`: 30 seconds
+      - `refresh_mode`: continuous
+      - `partition_by`: event_date
+      - Connector: Kafka with Debezium format
+
+      **Use Case**:
+      Real-time user analytics dashboard showing current user activity,
+      purchases, and revenue metrics updated continuously from Kafka events.
+
+      **Lifecycle Management**:
+      ```bash
+      # Suspend for maintenance
+      dbt run-operation suspend_materialized_table --args '{model: mt_continuous_user_metrics}'
+
+      # Resume after maintenance
+      dbt run-operation resume_materialized_table --args '{model: mt_continuous_user_metrics}'
+
+      # Manual refresh (if needed)
+      dbt run-operation refresh_materialized_table --args '{model: mt_continuous_user_metrics}'
+      ```
+
+      **Requirements**:
+      - Flink 1.20+
+      - Paimon Catalog
+      - Checkpoint directory configured for suspend/resume
+    config:
+      materialized: materialized_table
+      freshness: "INTERVAL '30' SECOND"
+      refresh_mode: continuous
+      partition_by: ['event_date']
+    columns:
+      - name: user_id
+        description: Unique user identifier
+      - name: event_date
+        description: Date of events (partition key)
+      - name: event_count
+        description: Total events for this user on this date
+      - name: session_count
+        description: Distinct sessions for this user on this date
+      - name: purchase_count
+        description: Number of purchases
+      - name: total_revenue
+        description: Sum of purchase amounts
+      - name: last_event_time
+        description: Timestamp of last event for this user
+
+  - name: mt_full_daily_summary
+    description: |
+      **MATERIALIZED TABLE - FULL Refresh Mode**
+
+      Daily summary metrics refreshed hourly in batch mode.
+
+      **Refresh Strategy**: FULL (batch)
+      - Scheduled batch job refreshes entire table hourly
+      - Partition-aware: Only latest partition refreshed
+      - More cost-effective than CONTINUOUS mode
+
+      **Configuration**:
+      - `freshness`: 1 hour
+      - `refresh_mode`: full
+      - `partition_by`: summary_date
+      - Connector: Filesystem (Parquet)
+
+      **Use Case**:
+      Daily reporting dashboard that doesn't need real-time updates.
+      Refreshes hourly to balance cost and data freshness.
+
+      **Optimization**:
+      With partition formatting, only the latest partition (today's data)
+      is refreshed on each run. Historical partitions remain unchanged.
+
+      **Lifecycle Management**:
+      ```bash
+      # Suspend scheduled refreshes
+      dbt run-operation suspend_materialized_table --args '{model: mt_full_daily_summary}'
+
+      # Resume scheduled refreshes
+      dbt run-operation resume_materialized_table --args '{model: mt_full_daily_summary}'
+
+      # Manual partition refresh
+      dbt run-operation refresh_materialized_table --args '{model: mt_full_daily_summary, partition: {\"summary_date\": \"2024-06-20\"}}'
+      ```
+
+      **Requirements**:
+      - Flink 1.20+
+      - Paimon Catalog
+      - Workflow scheduler (embedded) configured
+    config:
+      materialized: materialized_table
+      freshness: "INTERVAL '1' HOUR"
+      refresh_mode: full
+      partition_by: ['summary_date']
+    columns:
+      - name: summary_date
+        description: Date of summary (partition key, format: yyyy-MM-dd)
+      - name: unique_users
+        description: Count of distinct users active on this date
+      - name: total_events
+        description: Total events across all users
+      - name: purchases
+        description: Total purchase events
+      - name: purchases_per_user
+        description: Average purchases per active user
+      - name: avg_session_duration
+        description: Average session duration in seconds
+      - name: first_event
+        description: Timestamp of first event on this date
+      - name: last_event
+        description: Timestamp of last event on this date
+      - name: materialized_at
+        description: Timestamp when this summary was materialized
+
+  - name: mt_product_catalog_denorm
+    description: |
+      **MATERIALIZED TABLE - Auto Refresh Mode**
+
+      Denormalized product catalog with automatic mode selection.
+
+      **Refresh Strategy**: AUTO (Flink chooses based on freshness)
+      - 5-minute freshness target
+      - Flink determines optimal mode (likely CONTINUOUS)
+      - No explicit refresh_mode specified
+
+      **Configuration**:
+      - `freshness`: 5 minutes
+      - `refresh_mode`: (not specified - auto)
+      - No partitions (full table refresh)
+      - Connector: JDBC (PostgreSQL)
+
+      **Use Case**:
+      Product catalog with denormalized category, brand, supplier,
+      and inventory data. Refreshes every 5 minutes to stay current
+      with catalog changes.
+
+      **Schema**:
+      Combines data from multiple normalized tables:
+      - products (base)
+      - categories (dimension)
+      - brands (dimension)
+      - suppliers (dimension)
+      - reviews (aggregated)
+      - inventory (aggregated)
+
+      **Benefits**:
+      - Single table query for product details (no joins)
+      - Up-to-date inventory counts
+      - Real-time review ratings
+      - Simplified analytics queries
+
+      **Requirements**:
+      - Flink 1.20+
+      - Paimon Catalog
+      - JDBC connector
+      - PostgreSQL database
+    config:
+      materialized: materialized_table
+      freshness: "INTERVAL '5' MINUTE"
+    columns:
+      - name: product_id
+        description: Primary key - unique product identifier
+      - name: product_name
+        description: Product name
+      - name: sku
+        description: Stock keeping unit
+      - name: base_price
+        description: Base product price
+      - name: description
+        description: Product description
+      - name: category_id
+        description: Category identifier
+      - name: category_name
+        description: Category name (denormalized)
+      - name: category_path
+        description: Full category hierarchy path
+      - name: brand_id
+        description: Brand identifier
+      - name: brand_name
+        description: Brand name (denormalized)
+      - name: brand_country
+        description: Country of brand origin
+      - name: supplier_id
+        description: Supplier identifier
+      - name: supplier_name
+        description: Supplier name (denormalized)
+      - name: supplier_rating
+        description: Supplier quality rating
+      - name: review_count
+        description: Number of customer reviews (aggregated)
+      - name: avg_rating
+        description: Average customer rating (aggregated)
+      - name: total_inventory
+        description: Total units across all warehouses (aggregated)
+      - name: warehouse_count
+        description: Number of warehouses stocking this product
+      - name: denorm_timestamp
+        description: Timestamp when denormalization occurred
