@@ -79,6 +79,7 @@ Choose the path that matches your goal:
 - [Incremental Models](guides/incremental-models.md) -- Append, insert_overwrite, and merge strategies
 - [Sources and Connectors](guides/sources-and-connectors.md) -- Source definitions, column types, CDC setup
 - [Ververica Deployment](guides/ververica-deployment.md) -- Deploy models to Ververica Cloud
+- [Workflow Tutorial](guides/workflow-tutorial.md) -- One-command deployment: compile, transform, deploy, and start
 - [CI/CD](guides/ci-cd.md) -- GitHub Actions workflows and multi-environment deployment
 
 ### Reference

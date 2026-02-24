@@ -8,7 +8,7 @@ This guide covers deploying dbt-flink models to Ververica Cloud from CI/CD pipel
 
 ## GitHub Actions Workflow
 
-The following workflow compiles dbt models and deploys them to Ververica Cloud on pushes to the `main` branch.
+The `workflow` command handles the entire pipeline in a single invocation: compile, transform, authenticate, deploy each model, and optionally start all jobs. No separate auth or compile steps are needed.
 
 ```yaml
 # .github/workflows/deploy-flink.yml
@@ -58,44 +58,21 @@ jobs:
           dbt --version
           dbt-flink-ververica --version
 
-      - name: Authenticate with Ververica Cloud
+      - name: Deploy to Ververica Cloud
         env:
           VERVERICA_EMAIL: ${{ secrets.VERVERICA_EMAIL }}
           VERVERICA_PASSWORD: ${{ secrets.VERVERICA_PASSWORD }}
           VERVERICA_GATEWAY_URL: ${{ vars.VERVERICA_GATEWAY_URL }}
-        run: |
-          dbt-flink-ververica auth login \
-            --email "$VERVERICA_EMAIL" \
-            --password "$VERVERICA_PASSWORD" \
-            --gateway-url "$VERVERICA_GATEWAY_URL"
-
-      - name: Compile dbt models
-        run: |
-          dbt-flink-ververica compile \
-            --project-dir . \
-            --target ${{ vars.DBT_TARGET || 'prod' }} \
-            --output-dir ./target/ververica
-
-      - name: Deploy to Ververica Cloud
-        env:
-          VERVERICA_EMAIL: ${{ secrets.VERVERICA_EMAIL }}
-          VERVERICA_GATEWAY_URL: ${{ vars.VERVERICA_GATEWAY_URL }}
           VERVERICA_WORKSPACE_ID: ${{ vars.VERVERICA_WORKSPACE_ID }}
           VERVERICA_NAMESPACE: ${{ vars.VERVERICA_NAMESPACE }}
+          VERVERICA_ENGINE_VERSION: ${{ vars.VERVERICA_ENGINE_VERSION }}
         run: |
-          for sql_file in ./target/ververica/*.sql; do
-            model_name=$(basename "$sql_file" .sql)
-            echo "Deploying: $model_name"
-
-            dbt-flink-ververica deploy \
-              --name "dbt-${model_name}" \
-              --sql-file "$sql_file" \
-              --workspace-id "$VERVERICA_WORKSPACE_ID" \
-              --namespace "$VERVERICA_NAMESPACE" \
-              --email "$VERVERICA_EMAIL" \
-              --gateway-url "$VERVERICA_GATEWAY_URL" \
-              --parallelism ${{ vars.PARALLELISM || '1' }}
-          done
+          dbt-flink-ververica workflow \
+            --name-prefix "dbt-${{ github.event.inputs.environment || 'staging' }}" \
+            --target ${{ vars.DBT_TARGET || 'prod' }} \
+            --parallelism ${{ vars.PARALLELISM || '1' }} \
+            --config config/${{ github.event.inputs.environment || 'staging' }}.toml \
+            --start
 
       - name: Deployment summary
         if: always()
@@ -107,8 +84,9 @@ jobs:
           echo "| Environment | ${{ github.event.inputs.environment || 'staging' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Namespace | ${{ vars.VERVERICA_NAMESPACE }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Target | ${{ vars.DBT_TARGET || 'prod' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Models | $(ls ./target/ververica/*.sql 2>/dev/null | wc -l) |" >> $GITHUB_STEP_SUMMARY
 ```
+
+The `workflow` command authenticates inline using `VERVERICA_PASSWORD` (no keyring needed in CI), compiles all models, and deploys each as its own SQLSCRIPT deployment named `{prefix}-{model_name}`.
 
 ## Environment Variables
 
@@ -128,6 +106,7 @@ These values must never appear in logs or config files.
 | `VERVERICA_GATEWAY_URL` | `https://app.ververica.cloud` | Ververica Cloud API base URL |
 | `VERVERICA_WORKSPACE_ID` | *(required)* | Target workspace UUID |
 | `VERVERICA_NAMESPACE` | `default` | Target namespace within workspace |
+| `VERVERICA_ENGINE_VERSION` | `vera-4.0.0-flink-1.20` | Flink engine version for deployments |
 | `DBT_TARGET` | `prod` | dbt target for compilation |
 | `PARALLELISM` | `1` | Default job parallelism |
 
@@ -205,17 +184,27 @@ sla = "critical"
 
 ### Selecting Environment in CI
 
+The `--config` flag on the `workflow` command selects the TOML file for each environment. Values from the TOML file provide defaults that can be overridden by env vars or CLI flags:
+
 ```yaml
 # In the workflow, select config based on environment
 - name: Deploy with environment config
+  env:
+    VERVERICA_EMAIL: ${{ secrets.VERVERICA_EMAIL }}
+    VERVERICA_PASSWORD: ${{ secrets.VERVERICA_PASSWORD }}
   run: |
-    CONFIG_FILE="config/${{ github.event.inputs.environment || 'staging' }}.toml"
+    ENV="${{ github.event.inputs.environment || 'staging' }}"
+    CONFIG_FILE="config/${ENV}.toml"
 
     dbt-flink-ververica config validate "$CONFIG_FILE"
 
-    # Use the validated config for deployment
-    echo "Using config: $CONFIG_FILE"
+    dbt-flink-ververica workflow \
+      --name-prefix "dbt-${ENV}" \
+      --config "$CONFIG_FILE" \
+      --start
 ```
+
+Config priority: CLI flags > env vars (`VERVERICA_*`) > TOML config > hardcoded defaults.
 
 ## Rollback Strategies
 
@@ -226,14 +215,14 @@ When a deployment fails or introduces a regression, use the `restore_strategy` s
 If the deployment was using `STATEFUL` upgrade strategy, Ververica Cloud takes a savepoint before stopping the old job. You can restore from that savepoint:
 
 ```bash
-# Stop the current (broken) deployment
-# Then restart with restore from latest savepoint
+# Redeploy previous version with auto-start
 dbt-flink-ververica deploy \
   --name "dbt-my-model" \
   --sql-file ./target/ververica/previous_version.sql \
-  --workspace-id "$WORKSPACE_ID" \
-  --namespace production \
-  --email "$EMAIL"
+  --workspace-id "$VERVERICA_WORKSPACE_ID" \
+  --email "$VERVERICA_EMAIL" \
+  --password "$VERVERICA_PASSWORD" \
+  --start
 ```
 
 ### Restore Strategy Decision Table
@@ -252,34 +241,32 @@ dbt-flink-ververica deploy \
   run: |
     set +e  # Don't exit on error
 
-    # Attempt deployment
-    dbt-flink-ververica deploy \
-      --name "dbt-my-model" \
-      --sql-file ./target/ververica/my_model.sql \
-      --workspace-id "$VERVERICA_WORKSPACE_ID" \
-      --namespace "$VERVERICA_NAMESPACE" \
-      --email "$VERVERICA_EMAIL"
+    # Attempt full workflow deployment
+    dbt-flink-ververica workflow \
+      --name-prefix "dbt-prod" \
+      --target prod \
+      --start
 
     DEPLOY_EXIT=$?
 
     if [ $DEPLOY_EXIT -ne 0 ]; then
       echo "Deployment failed. Attempting rollback..."
 
-      # Redeploy previous version from git
-      git show HEAD~1:target/ververica/my_model.sql > /tmp/rollback.sql
-
-      dbt-flink-ververica deploy \
-        --name "dbt-my-model" \
-        --sql-file /tmp/rollback.sql \
-        --workspace-id "$VERVERICA_WORKSPACE_ID" \
-        --namespace "$VERVERICA_NAMESPACE" \
-        --email "$VERVERICA_EMAIL"
+      # Checkout previous version and redeploy
+      git stash
+      git checkout HEAD~1 -- models/
+      dbt-flink-ververica workflow \
+        --name-prefix "dbt-prod" \
+        --target prod \
+        --start
+      git checkout HEAD -- models/
 
       echo "::error::Deployment failed and was rolled back"
       exit 1
     fi
   env:
     VERVERICA_EMAIL: ${{ secrets.VERVERICA_EMAIL }}
+    VERVERICA_PASSWORD: ${{ secrets.VERVERICA_PASSWORD }}
     VERVERICA_WORKSPACE_ID: ${{ vars.VERVERICA_WORKSPACE_ID }}
     VERVERICA_NAMESPACE: ${{ vars.VERVERICA_NAMESPACE }}
 ```

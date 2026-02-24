@@ -26,15 +26,18 @@ stateDiagram-v2
 
 ## Authentication
 
-Ververica Cloud uses JWT-based authentication. The CLI stores credentials securely in your operating system's keyring (macOS Keychain, Windows Credential Manager, or Linux Secret Service).
+Ververica Cloud uses JWT-based authentication. The CLI supports two authentication paths:
 
-### Login
+1. **Keyring-based** (interactive) -- credentials saved in OS keyring, token auto-refreshes
+2. **Password-based** (CI/CD) -- password provided via `--password` flag or `VERVERICA_PASSWORD` env var, keyring not used
+
+### Interactive Login (Keyring)
 
 ```bash
-# Interactive (prompts for email and password)
+# Interactive (prompts for email and password, saves to keyring)
 dbt-flink-ververica auth login
 
-# Non-interactive
+# Non-interactive with keyring save
 dbt-flink-ververica auth login \
   --email user@example.com \
   --password "$VERVERICA_PASSWORD"
@@ -51,6 +54,29 @@ On success, the CLI:
 3. Stores the email and password in the OS keyring under the service name `dbt-flink-ververica`
 4. Caches the token in memory for the current session
 
+### Password Auth (CI/CD)
+
+For CI/CD pipelines where keyring is unavailable, pass `--password` directly to `deploy` or `workflow`. The CLI authenticates without touching the keyring:
+
+```bash
+# Password via flag
+dbt-flink-ververica workflow \
+  --name-prefix prod \
+  --email ci@company.com \
+  --password "$VERVERICA_PASSWORD" \
+  --workspace-id "$WORKSPACE_ID" \
+  --start
+
+# Password via env var (cleaner)
+export VERVERICA_EMAIL=ci@company.com
+export VERVERICA_PASSWORD=xxx
+export VERVERICA_WORKSPACE_ID=a1b2c3d4-...
+
+dbt-flink-ververica workflow --name-prefix prod --start
+```
+
+No separate `auth login` step is needed -- `deploy` and `workflow` authenticate inline.
+
 ### Token Lifecycle
 
 ```mermaid
@@ -59,10 +85,17 @@ sequenceDiagram
     participant Keyring
     participant VervericaAPI
 
-    CLI->>Keyring: Read stored credentials
-    Keyring-->>CLI: email + password
-    CLI->>VervericaAPI: POST /api/v1/auth/tokens
-    VervericaAPI-->>CLI: JWT (accessToken, expiresIn)
+    alt Password provided (CI/CD path)
+        CLI->>VervericaAPI: POST /api/v1/auth/tokens (email + password)
+        VervericaAPI-->>CLI: JWT (accessToken, expiresIn)
+        Note right of CLI: Keyring not used
+    else No password (interactive path)
+        CLI->>Keyring: Read stored credentials
+        Keyring-->>CLI: email + password
+        CLI->>VervericaAPI: POST /api/v1/auth/tokens
+        VervericaAPI-->>CLI: JWT (accessToken, expiresIn)
+    end
+
     Note right of CLI: Token cached in memory
     CLI->>VervericaAPI: API requests with Authorization: Bearer <token>
 
@@ -72,7 +105,7 @@ sequenceDiagram
     VervericaAPI-->>CLI: New JWT
 ```
 
-The `AuthManager.get_valid_token()` method automatically re-authenticates using stored credentials when the current token expires or is within 60 seconds of expiring.
+The `AuthManager.get_valid_token()` method automatically re-authenticates when the current token expires or is within 60 seconds of expiring. When a password is provided, it uses direct auth; otherwise it falls back to keyring credentials.
 
 ### Logout and Status
 
@@ -392,33 +425,61 @@ dbt-flink-ververica compile \
   --output-dir ./target/ververica
 ```
 
-### Deploy
+### Deploy (Single Model)
 
-Deploys a SQL file to Ververica Cloud:
+Deploys a single SQL file as a SQLSCRIPT deployment. Auto-discovers SQL from `target/ververica/{name}.sql` if `--sql-file` is omitted:
 
 ```bash
+# Auto-discovery (after compile)
+dbt-flink-ververica deploy \
+  --name my-streaming-job \
+  --workspace-id a1b2c3d4-... \
+  --email user@example.com \
+  --parallelism 2 \
+  --start
+
+# Explicit SQL file with password auth (CI/CD)
 dbt-flink-ververica deploy \
   --name my-streaming-job \
   --sql-file ./target/ververica/my_model.sql \
-  --workspace-id a1b2c3d4-... \
-  --namespace production \
-  --email user@example.com \
-  --parallelism 2
+  --workspace-id "$WORKSPACE_ID" \
+  --email "$EMAIL" \
+  --password "$PASSWORD" \
+  --engine-version vera-4.0.0-flink-1.20 \
+  --start
 ```
 
-### Workflow (Compile + Deploy)
+### Workflow (Compile + Deploy All Models)
 
-Runs the full pipeline in a single command:
+Runs the complete pipeline: compile, transform, authenticate, and deploy **each model as its own deployment**. Each model becomes `{prefix}-{model_name}`:
 
 ```bash
+# Dry run -- compile and preview SQL without deploying
 dbt-flink-ververica workflow \
-  --name my-streaming-job \
+  --name-prefix prod \
   --project-dir . \
+  --dry-run
+
+# Full deployment with auto-start
+dbt-flink-ververica workflow \
+  --name-prefix prod \
   --workspace-id a1b2c3d4-... \
-  --namespace production \
   --email user@example.com \
-  --target prod
+  --password "$PASSWORD" \
+  --target prod \
+  --parallelism 4 \
+  --start
+
+# Deploy specific models only
+dbt-flink-ververica workflow \
+  --name-prefix prod \
+  --models "user_dim,events_log" \
+  --workspace-id "$WORKSPACE_ID" \
+  --email "$EMAIL" \
+  --start
 ```
+
+Config priority: CLI flags > env vars > TOML config > defaults. See [CLI Reference](../reference/cli-reference.md#workflow) for all options.
 
 ### Config
 
@@ -434,7 +495,21 @@ dbt-flink-ververica config validate dbt-flink-ververica.toml
 
 ## Programmatic Deployment
 
-For CI/CD pipelines and custom automation, you can use the Python API directly. The `scripts/deploy_dbt_models.py` pattern demonstrates this approach.
+For most CI/CD pipelines, the `workflow` command handles everything in a single invocation:
+
+```bash
+export VERVERICA_EMAIL=ci@company.com
+export VERVERICA_PASSWORD=xxx
+export VERVERICA_WORKSPACE_ID=a1b2c3d4-...
+
+dbt-flink-ververica workflow \
+  --name-prefix prod \
+  --target prod \
+  --parallelism 4 \
+  --start
+```
+
+For custom automation beyond what the CLI provides, you can use the Python API directly:
 
 ### Deploy Script Pattern
 
@@ -443,27 +518,24 @@ For CI/CD pipelines and custom automation, you can use the Python API directly. 
 """Deploy dbt-flink models to Ververica Cloud programmatically."""
 
 import os
-import sys
-import time
 from pathlib import Path
 
-from dbt_flink_ververica.auth import Credentials, VervericaAuthClient
+from dbt_flink_ververica.auth import AuthManager
 from dbt_flink_ververica.client import DeploymentSpec, VervericaClient
 from dbt_flink_ververica.sql_processor import DbtArtifactReader, SqlProcessor
 
 
 def main():
     # Load configuration from environment
-    gateway_url = os.environ["VERVERICA_GATEWAY_URL"]
+    gateway_url = os.environ.get("VERVERICA_GATEWAY_URL", "https://app.ververica.cloud")
     workspace_id = os.environ["VERVERICA_WORKSPACE_ID"]
     namespace = os.environ.get("VERVERICA_NAMESPACE", "default")
     email = os.environ["VERVERICA_EMAIL"]
     password = os.environ["VERVERICA_PASSWORD"]
 
-    # Authenticate
-    auth_client = VervericaAuthClient(gateway_url)
-    credentials = Credentials(email=email, password=password)
-    token = auth_client.authenticate_sync(credentials)
+    # Authenticate (password path skips keyring)
+    auth_manager = AuthManager(gateway_url)
+    token = auth_manager.get_valid_token(email, password=password)
 
     # Read and process compiled dbt models
     project_dir = Path(".")
@@ -477,16 +549,14 @@ def main():
     )
     processed_models = reader.process_models(models, processor)
 
-    # Deploy each model
-    timestamp = int(time.time())
-
+    # Deploy each model as its own deployment
     with VervericaClient(gateway_url, workspace_id, token) as client:
         for model in processed_models:
             if model.processed is None:
                 continue
 
             spec = DeploymentSpec(
-                name=f"dbt-{model.name}-{timestamp}",
+                name=f"prod-{model.name}",
                 namespace=namespace,
                 sql_script=model.processed.final_sql,
                 engine_version="vera-4.0.0-flink-1.20",
@@ -500,6 +570,12 @@ def main():
 
             status = client.create_sqlscript_deployment(spec)
             print(f"Deployed {model.name}: {status.deployment_id}")
+
+            # Optionally start the deployment
+            client.start_deployment(
+                namespace=namespace,
+                deployment_id=status.deployment_id,
+            )
 
 
 if __name__ == "__main__":

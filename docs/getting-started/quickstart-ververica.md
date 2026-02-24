@@ -536,98 +536,91 @@ The transformations:
 4. **Extract DROP statements** -- pulls out `drop_statement` hint values and validates them against an allowlist pattern to prevent SQL injection.
 5. **Assemble** -- concatenates SET statements, DROP statements, and clean SQL in the correct order.
 
-## Step 6: Deploy to Ververica Cloud
+## Step 6: Deploy a Single Model
 
-Deploy the compiled SQL as a SQLSCRIPT job:
+Deploy one compiled SQL file as a SQLSCRIPT job:
 
 ```bash
 dbt-flink-ververica deploy \
-    --name vvc-tutorial-pipeline \
+    --name vvc-tutorial-tumbling \
     --sql-file target/ververica/tumbling_window_agg.sql \
     --workspace-id YOUR_WORKSPACE_ID \
     --namespace default \
-    --email your@email.com
+    --email your@email.com \
+    --start
 ```
 
 Output:
 
 ```
 Deploying to Ververica Cloud...
-Deployment name: vvc-tutorial-pipeline
+Deployment name: vvc-tutorial-tumbling
 Workspace: YOUR_WORKSPACE_ID
 Namespace: default
 
 Reading SQL from: target/ververica/tumbling_window_agg.sql
 Read 847 characters
 
-Authenticating... done
 Authenticated as your@email.com
 
-Creating deployment... done
 Deployment created successfully!
+Deployment starting...
 
 Deployment details:
   - ID: dep-abc123-def456-789
-  - Name: vvc-tutorial-pipeline
-  - State: CREATED
+  - Name: vvc-tutorial-tumbling
+  - State: STREAMING
   - Namespace: default
 
 View in Ververica Cloud:
   https://app.ververica.cloud/workspaces/YOUR_WORKSPACE_ID/deployments/dep-abc123-def456-789
 ```
 
-## Step 7: One-Step Workflow (Alternative)
+## Step 7: One-Step Workflow (Recommended)
 
-Instead of running compile and deploy separately, use the `workflow` command to do both in a single operation:
+Instead of compiling and deploying separately, use the `workflow` command to handle everything in a single invocation. Each model becomes its own deployment:
 
 ```bash
 dbt-flink-ververica workflow \
-    --name vvc-tutorial-pipeline \
+    --name-prefix vvc-tutorial \
     --project-dir . \
     --workspace-id YOUR_WORKSPACE_ID \
     --namespace default \
     --email your@email.com \
-    --target dev
+    --target dev \
+    --start
 ```
 
 This executes five steps in sequence:
 
-1. **Compile** -- runs `dbt compile` to generate SQL artifacts
-2. **Process** -- reads compiled models and transforms hints
-3. **Combine** -- merges all model SQL into a single script
+1. **Load config** -- reads TOML config (if present) and merges with CLI flags
+2. **Compile** -- runs `dbt compile` to generate SQL artifacts
+3. **Transform** -- reads compiled models, parses hints, generates SET/DROP statements
 4. **Authenticate** -- retrieves or refreshes the JWT token
-5. **Deploy** -- creates the SQLSCRIPT deployment on Ververica Cloud
+5. **Deploy per-model** -- creates a separate SQLSCRIPT deployment for each model, named `{prefix}-{model_name}`
 
 ```
-Running full workflow (compile + deploy)...
+Step 1/5: Compile dbt models
+  dbt compile successful
 
-Step 1: Compile dbt models
-Running dbt compile... done
-dbt compile successful
+Step 2/5: Process SQL
+  datagen_source: 0 hints
+  tumbling_window_agg: 2 hints -> 1 SET statements
 
-Step 2: Process SQL
-Found 2 models
-Processed 2 models
+Step 3/5: Authenticate
+  Authenticated as your@email.com
 
-Step 3: Combine SQL
-Combined SQL: 1847 characters
+Step 4/5: Deploy to Ververica Cloud
+  vvc-tutorial-datagen_source -> dep-abc123 [CREATED]
+  vvc-tutorial-tumbling_window_agg -> dep-def456 [CREATED]
 
-Step 4: Authenticate
-Authenticated as your@email.com
+Step 5/5: Start jobs
+  vvc-tutorial-datagen_source -> STARTING
+  vvc-tutorial-tumbling_window_agg -> STARTING
 
-Step 5: Deploy to Ververica Cloud
-Creating deployment... done
-Deployment created successfully!
-
-Deployment Summary
-  - ID: dep-abc123-def456-789
-  - Name: vvc-tutorial-pipeline
-  - State: CREATED
-  - Namespace: default
-  - Models: 2
-
-View in Ververica Cloud:
-  https://app.ververica.cloud/workspaces/YOUR_WORKSPACE_ID/deployments/dep-abc123-def456-789
+Deployed: 2 models
+Started: 2 jobs
+View: https://app.ververica.cloud/workspaces/YOUR_WORKSPACE_ID/
 ```
 
 ## Step 8: Verify in Ververica Cloud UI
@@ -762,34 +755,42 @@ sla = "critical"
 
 ### Deploying per environment
 
-Copy the desired config file before running the workflow:
+Use the `--config` flag to select the TOML file for each environment. No need to copy files:
 
 ```bash
 # Deploy to staging
-cp config/staging.toml dbt-flink-ververica.toml
 dbt-flink-ververica workflow \
-    --name my-pipeline-staging \
-    --workspace-id staging-workspace-id \
+    --name-prefix staging \
+    --config config/staging.toml \
     --email your@email.com \
-    --target staging
+    --start
 
 # Deploy to production
-cp config/production.toml dbt-flink-ververica.toml
 dbt-flink-ververica workflow \
-    --name my-pipeline-prod \
-    --workspace-id prod-workspace-id \
+    --name-prefix prod \
+    --config config/production.toml \
     --email your@email.com \
-    --target prod
+    --parallelism 4 \
+    --start
+
+# CI/CD: use env vars for credentials
+export VERVERICA_EMAIL=ci@company.com
+export VERVERICA_PASSWORD=xxx
+
+dbt-flink-ververica workflow \
+    --name-prefix prod \
+    --config config/production.toml \
+    --start
 ```
 
 ## Step 11: Cleanup
 
-### Stop and delete a deployment
+### Stop and delete deployments
 
-Use the Ververica Cloud UI to stop a running job and delete the deployment:
+Each model is deployed as its own SQLSCRIPT deployment (e.g., `vvc-tutorial-datagen_source`, `vvc-tutorial-tumbling_window_agg`). Use the Ververica Cloud UI to stop and delete them:
 
 1. Navigate to **Deployments** in the sidebar.
-2. Click on your deployment.
+2. Click on each deployment (they are named `{prefix}-{model_name}`).
 3. Click **Stop** to cancel the running Flink job.
 4. After the job stops, click **Delete** to remove the deployment.
 
@@ -809,67 +810,62 @@ rm -f dbt-flink-ververica.toml
 rm -f ~/.dbt/flink-session.yml
 ```
 
-## Step 12: Programmatic Deployment with Scripts
+## Step 12: CI/CD Deployment
 
-For CI/CD pipelines or batch deployment of multiple models, use the `scripts/deploy_dbt_models.py` script. This script deploys multiple pre-defined Flink SQL models to Ververica Cloud without requiring the full dbt compile workflow.
+For CI/CD pipelines, the `workflow` command handles everything in a single invocation. No separate scripts or auth steps are needed:
 
 ### Environment setup
 
-Create a `.env` file in the repository root:
+Set these environment variables in your CI system (GitHub Secrets, GitLab CI variables, etc.):
 
 ```bash
-VERVERICA_EMAIL=your@email.com
-VERVERICA_PASSWORD=your-password
-VERVERICA_GATEWAY_URL=https://app.ververica.cloud
+VERVERICA_EMAIL=ci@company.com
+VERVERICA_PASSWORD=your-service-account-password
 VERVERICA_WORKSPACE_ID=your-workspace-id
+# Optional:
+VERVERICA_GATEWAY_URL=https://app.ververica.cloud
 VERVERICA_NAMESPACE=default
 VERVERICA_ENGINE_VERSION=vera-4.0.0-flink-1.20
 ```
 
-### Run the script
+### Single-command deployment
 
 ```bash
-# Deploy all models
-python scripts/deploy_dbt_models.py --prefix tutorial
+# Deploy all models with auto-start
+dbt-flink-ververica workflow \
+    --name-prefix prod \
+    --target prod \
+    --parallelism 4 \
+    --start
 
-# Deploy specific models
-python scripts/deploy_dbt_models.py --prefix tutorial --models tumbling-window-agg
+# Deploy specific models only
+dbt-flink-ververica workflow \
+    --name-prefix prod \
+    --models "datagen_source,tumbling_window_agg" \
+    --start
 
-# Preview SQL without deploying
-python scripts/deploy_dbt_models.py --dry-run
+# Preview SQL without deploying (no auth required)
+dbt-flink-ververica workflow \
+    --name-prefix prod \
+    --dry-run
 
-# Deploy and start immediately
-python scripts/deploy_dbt_models.py --prefix tutorial --start
+# Use a TOML config for environment-specific defaults
+dbt-flink-ververica workflow \
+    --name-prefix prod \
+    --config config/production.toml \
+    --start
 ```
 
-The script:
+The workflow command:
 
-1. Authenticates with Ververica Cloud using the `VervericaAuthClient`.
-2. For each model, creates a `DeploymentSpec` with the SQL script, engine version, and labels.
-3. Calls `VervericaClient.create_sqlscript_deployment()` to create each deployment.
-4. Optionally starts all deployments with `client.start_deployment()`.
+1. Loads TOML config (from `--config` or auto-discovered `dbt-flink-ververica.toml`)
+2. Compiles dbt models with `dbt compile`
+3. Transforms SQL (parses hints, generates SET/DROP statements)
+4. Authenticates with `--password` or `VERVERICA_PASSWORD` (skips keyring in CI)
+5. Deploys each model as its own SQLSCRIPT deployment named `{prefix}-{model_name}`
+6. Optionally starts all jobs with `--start`
 
-### Available models in the script
-
-| Model Name | Description |
-|---|---|
-| `tumbling-window-agg` | 1-min tumbling windows: event count and total amount per user |
-| `hopping-window-agg` | 5-min hopping windows (1-min slide): moving average amount |
-| `session-window-agg` | Session windows (30s gap): user activity session tracking |
-
-Each model includes an inline datagen source table definition, so deployments are self-contained and do not depend on external catalog entries.
-
-### Temporary vs persistent tables
-
-By default, the script rewrites `CREATE TABLE` to `CREATE TEMPORARY TABLE` so tables are session-scoped and do not pollute the catalog. Use `--persistent` to keep them as permanent catalog entries:
-
-```bash
-# Temporary tables (default, recommended for testing)
-python scripts/deploy_dbt_models.py --prefix tutorial
-
-# Persistent tables (catalog entries survive job restarts)
-python scripts/deploy_dbt_models.py --prefix tutorial --persistent
-```
+See the [CI/CD Guide](../guides/ci-cd.md) for complete GitHub Actions workflows and multi-environment deployment patterns.
 
 ## Architecture Summary
 

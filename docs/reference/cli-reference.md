@@ -257,9 +257,9 @@ See [SQL Transformation Reference](sql-transformation.md) for details on the pro
 
 ## deploy
 
-Deploy a SQL file to Ververica Cloud as a SQLSCRIPT deployment.
+Deploy a single SQL file to Ververica Cloud as a SQLSCRIPT deployment.
 
-Authentication credentials must be saved first with `auth login`. The command creates a new deployment in the specified workspace and namespace.
+If `--sql-file` is not provided, the command auto-discovers compiled SQL from `target/ververica/{name}.sql`. Authentication uses either `--password` (CI/CD) or saved keyring credentials.
 
 ```bash
 dbt-flink-ververica deploy [OPTIONS]
@@ -267,38 +267,54 @@ dbt-flink-ververica deploy [OPTIONS]
 
 ### Options
 
-| Option | Short | Type | Default | Required | Description |
-|---|---|---|---|---|---|
-| `--name` | `-n` | string | -- | Yes | Deployment name. Alphanumeric characters, hyphens, and underscores. Maximum 128 characters. |
-| `--sql-file` | -- | path | -- | No | Path to the SQL file to deploy. If omitted, the command prompts you to run `compile` first. |
-| `--workspace-id` | -- | string | -- | Yes | Ververica workspace UUID. Find this in the Ververica Cloud UI under workspace settings. |
-| `--namespace` | -- | string | `default` | No | Namespace within the workspace. |
-| `--email` | `-e` | string | -- | Yes | Ververica Cloud email address for authentication. Uses saved credentials from the system keyring. |
-| `--gateway-url` | -- | string | `https://app.ververica.cloud` | No | Ververica Cloud gateway URL. |
-| `--parallelism` | -- | integer | `1` | No | Flink job parallelism. Controls how many parallel instances of each operator run. |
+| Option | Short | Type | Default | Env Var | Required | Description |
+|---|---|---|---|---|---|---|
+| `--name` | `-n` | string | -- | -- | Yes | Deployment name. |
+| `--sql-file` | -- | path | Auto-discover | -- | No | Path to SQL file. If omitted, looks for `target/ververica/{name}.sql`. |
+| `--workspace-id` | -- | string | -- | `VERVERICA_WORKSPACE_ID` | Yes | Ververica workspace UUID. |
+| `--namespace` | -- | string | `default` | `VERVERICA_NAMESPACE` | No | Namespace within the workspace. |
+| `--email` | `-e` | string | -- | `VERVERICA_EMAIL` | Yes | Ververica Cloud email address. |
+| `--password` | `-p` | string | -- | `VERVERICA_PASSWORD` | No | Password for direct auth (skips keyring). |
+| `--gateway-url` | -- | string | `https://app.ververica.cloud` | `VERVERICA_GATEWAY_URL` | No | Ververica Cloud gateway URL. |
+| `--parallelism` | -- | integer | `1` | -- | No | Flink job parallelism (1-1000). |
+| `--engine-version` | -- | string | `vera-4.0.0-flink-1.20` | `VERVERICA_ENGINE_VERSION` | No | Flink engine version. |
+| `--start` | -- | flag | `False` | -- | No | Auto-start the deployment after creation. |
+| `--project-dir` | -- | path | Current working directory | -- | No | dbt project dir (for SQL auto-discovery). |
 
 ### Examples
 
-Deploy a compiled SQL file:
+Deploy with auto-discovery (after running `compile`):
+
+```bash
+dbt-flink-ververica deploy \
+  --name my-streaming-job \
+  --workspace-id a1b2c3d4-e5f6-7890-abcd-ef1234567890 \
+  --email user@company.com \
+  --parallelism 4 \
+  --start
+```
+
+Deploy with explicit SQL file and password auth (CI/CD):
 
 ```bash
 dbt-flink-ververica deploy \
   --name my-streaming-job \
   --sql-file target/ververica/user_events.sql \
-  --workspace-id a1b2c3d4-e5f6-7890-abcd-ef1234567890 \
-  --email user@company.com \
-  --parallelism 4
+  --workspace-id "$VERVERICA_WORKSPACE_ID" \
+  --email "$VERVERICA_EMAIL" \
+  --password "$VERVERICA_PASSWORD" \
+  --engine-version vera-4.0.0-flink-1.20 \
+  --start
 ```
 
-Deploy to a specific namespace:
+Deploy using env vars only:
 
 ```bash
-dbt-flink-ververica deploy \
-  --name staging-pipeline \
-  --sql-file target/ververica/combined.sql \
-  --workspace-id a1b2c3d4-e5f6-7890-abcd-ef1234567890 \
-  --namespace staging \
-  --email user@company.com
+export VERVERICA_EMAIL=ci@company.com
+export VERVERICA_PASSWORD=xxx
+export VERVERICA_WORKSPACE_ID=a1b2c3d4-...
+
+dbt-flink-ververica deploy --name my-job --start
 ```
 
 ### Output
@@ -309,18 +325,20 @@ Deployment name: my-streaming-job
 Workspace: a1b2c3d4-e5f6-7890-abcd-ef1234567890
 Namespace: default
 
-Reading SQL from: target/ververica/user_events.sql
+Auto-discovered SQL: target/ververica/my-streaming-job.sql
 Read 1842 characters
 
 Authenticated as user@company.com
 
 Deployment created successfully!
+Deployment starting...
 
 Deployment details:
-  ID: f1e2d3c4-b5a6-7890-1234-567890abcdef
-  Name: my-streaming-job
-  State: STREAMING
-  Namespace: default
+  - ID: f1e2d3c4-b5a6-7890-1234-567890abcdef
+  - Name: my-streaming-job
+  - State: STREAMING
+  - Engine: vera-4.0.0-flink-1.20
+  - Namespace: default
 
 View in Ververica Cloud:
   https://app.ververica.cloud/workspaces/a1b2.../deployments/f1e2...
@@ -330,9 +348,9 @@ View in Ververica Cloud:
 
 ## workflow
 
-Run the complete workflow: compile dbt models, process SQL, and deploy to Ververica Cloud in a single command.
+Run the complete pipeline: compile dbt models, transform SQL, authenticate, and deploy each model as its own Ververica SQLSCRIPT deployment.
 
-This is a convenience command equivalent to running `compile` followed by `deploy`. All compiled models are combined into a single SQL file and deployed as one SQLSCRIPT deployment.
+Each dbt model becomes a separate deployment named `{name-prefix}-{model_name}`. This matches how Ververica Cloud works -- one SQLSCRIPT deployment = one Flink job, with independent scaling and lifecycle management.
 
 ```bash
 dbt-flink-ververica workflow [OPTIONS]
@@ -340,36 +358,135 @@ dbt-flink-ververica workflow [OPTIONS]
 
 ### Options
 
-| Option | Short | Type | Default | Required | Description |
-|---|---|---|---|---|---|
-| `--name` | `-n` | string | -- | Yes | Deployment name. |
-| `--project-dir` | -- | path | Current working directory | No | Path to the dbt project directory. |
-| `--workspace-id` | -- | string | -- | Yes | Ververica workspace UUID. |
-| `--namespace` | -- | string | `default` | No | Namespace within the workspace. |
-| `--email` | `-e` | string | -- | Yes | Ververica Cloud email address. |
-| `--target` | `-t` | string | `dev` | No | dbt target. |
+| Option | Short | Type | Default | Env Var | Required | Description |
+|---|---|---|---|---|---|---|
+| `--name-prefix` | `-n` | string | -- | -- | Yes | Deployment name prefix. Each model becomes `{prefix}-{model_name}`. |
+| `--project-dir` | -- | path | Current working directory | -- | No | Path to the dbt project directory. |
+| `--profiles-dir` | -- | path | `~/.dbt` | -- | No | Path to dbt profiles directory. |
+| `--target` | `-t` | string | `dev` | -- | No | dbt target for compilation. |
+| `--models` | `-m` | string | All models | -- | No | Comma-separated list of model names to deploy. |
+| `--workspace-id` | -- | string | -- | `VERVERICA_WORKSPACE_ID` | Yes* | Ververica workspace UUID. |
+| `--namespace` | -- | string | `default` | `VERVERICA_NAMESPACE` | No | Namespace within the workspace. |
+| `--email` | `-e` | string | -- | `VERVERICA_EMAIL` | Yes* | Ververica Cloud email. |
+| `--password` | `-p` | string | -- | `VERVERICA_PASSWORD` | No | Password for direct auth (skips keyring). |
+| `--gateway-url` | -- | string | From config or `https://app.ververica.cloud` | `VERVERICA_GATEWAY_URL` | No | Gateway URL. |
+| `--parallelism` | -- | integer | `1` | -- | No | Job parallelism (1-1000). |
+| `--engine-version` | -- | string | From config or `vera-4.0.0-flink-1.20` | `VERVERICA_ENGINE_VERSION` | No | Flink engine version. |
+| `--start` | -- | flag | `False` | -- | No | Auto-start all deployments after creation. |
+| `--dry-run` | -- | flag | `False` | -- | No | Compile and show SQL without deploying. |
+| `--config` | `-c` | path | Auto-discover `dbt-flink-ververica.toml` | -- | No | Path to TOML config file. |
+
+*Not required when using `--dry-run`.
+
+### Config Priority
+
+Values are resolved in this order (highest priority first):
+
+1. CLI flags (e.g., `--gateway-url`)
+2. Environment variables (e.g., `VERVERICA_GATEWAY_URL`)
+3. TOML config file values
+4. Hardcoded defaults
 
 ### Examples
 
-Full workflow from project root:
+Preview SQL without deploying:
 
 ```bash
 dbt-flink-ververica workflow \
-  --name prod-pipeline \
+  --name-prefix demo \
+  --project-dir ./my_project \
+  --dry-run
+```
+
+Full deployment with auto-start:
+
+```bash
+dbt-flink-ververica workflow \
+  --name-prefix prod \
   --workspace-id a1b2c3d4-e5f6-7890-abcd-ef1234567890 \
   --email user@company.com \
-  --target prod
+  --password "$VERVERICA_PASSWORD" \
+  --target prod \
+  --parallelism 4 \
+  --start
+```
+
+Deploy specific models only:
+
+```bash
+dbt-flink-ververica workflow \
+  --name-prefix staging \
+  --models "user_dim,events_log" \
+  --workspace-id "$WORKSPACE_ID" \
+  --email "$EMAIL" \
+  --start
+```
+
+CI/CD with env vars (no flags needed except prefix):
+
+```bash
+export VERVERICA_EMAIL=ci@company.com
+export VERVERICA_PASSWORD=xxx
+export VERVERICA_WORKSPACE_ID=a1b2c3d4-...
+export VERVERICA_ENGINE_VERSION=vera-4.0.0-flink-1.20
+
+dbt-flink-ververica workflow --name-prefix prod --start
+```
+
+Use a TOML config file for defaults:
+
+```bash
+dbt-flink-ververica workflow \
+  --name-prefix prod \
+  --config config/production.toml \
+  --email user@company.com \
+  --start
 ```
 
 ### Workflow Steps
 
 The command executes five steps sequentially:
 
-1. **Compile** -- Runs `dbt compile` against the specified target.
-2. **Process** -- Reads and transforms all compiled models.
-3. **Combine** -- Merges all processed SQL into a single deployment script, separated by model name comments.
-4. **Authenticate** -- Retrieves a valid authentication token using saved credentials.
-5. **Deploy** -- Creates a SQLSCRIPT deployment in Ververica Cloud.
+1. **Load config** -- Reads TOML config (from `--config` or auto-discovered `dbt-flink-ververica.toml`) and merges with CLI flags and env vars.
+2. **Compile** -- Runs `dbt compile` with `--target`, `--models`, `--profiles-dir`, `--project-dir`.
+3. **Transform** -- Reads compiled SQL, parses query hints, generates SET statements, extracts DROP statements.
+4. **Authenticate** -- Uses `--password` for direct auth, or falls back to keyring credentials.
+5. **Deploy per-model** -- Creates a separate SQLSCRIPT deployment for each model. If `--start`, starts each job after creation.
+
+### Output
+
+```
+Step 1/5: Compile dbt models
+  dbt compile successful
+
+Step 2/5: Process SQL
+  user_dim: 2 hints -> 1 SET statements
+  events_log: 1 hints -> 1 SET statements
+
+Step 3/5: Authenticate
+  Authenticated as user@company.com
+
+Step 4/5: Deploy to Ververica Cloud
+  prod-user_dim -> dep-abc123 [CREATED]
+  prod-events_log -> dep-def456 [CREATED]
+
+Step 5/5: Start jobs
+  prod-user_dim -> STARTING
+  prod-events_log -> STARTING
+
+┌──────────────────────────────────────────────┐
+│             Workflow Summary                  │
+├──────────────┬───────────────┬───────────────┤
+│ Model        │ Deployment ID │ Status        │
+├──────────────┼───────────────┼───────────────┤
+│ prod-user_dim│ dep-abc123    │ STARTING      │
+│ prod-events  │ dep-def456    │ STARTING      │
+└──────────────┴───────────────┴───────────────┘
+
+Deployed: 2 models
+Started: 2 jobs
+View: https://app.ververica.cloud/workspaces/ws-123/
+```
 
 ---
 
@@ -459,7 +576,7 @@ deployment -> parallelism
 # 1. Install
 pip install dbt-flink-adapter dbt-flink-ververica
 
-# 2. Authenticate
+# 2. Authenticate (saves credentials to system keyring)
 dbt-flink-ververica auth login --email user@company.com
 
 # 3. Generate config file
@@ -475,36 +592,51 @@ dbt-flink-ververica config validate ./dbt-flink-ververica.toml
 ### Iterative Development
 
 ```bash
-# Compile and review SQL locally
-dbt-flink-ververica compile --target dev
+# Preview SQL without deploying
+dbt-flink-ververica workflow \
+  --name-prefix dev \
+  --project-dir . \
+  --dry-run
 
-# Review the transformed SQL
-cat target/ververica/my_model.sql
-
-# Deploy when ready
+# Deploy a single model after reviewing
 dbt-flink-ververica deploy \
   --name my-model-dev \
-  --sql-file target/ververica/my_model.sql \
-  --workspace-id $WORKSPACE_ID \
-  --email user@company.com
+  --workspace-id "$WORKSPACE_ID" \
+  --email user@company.com \
+  --start
+
+# Or deploy all models at once
+dbt-flink-ververica workflow \
+  --name-prefix dev \
+  --workspace-id "$WORKSPACE_ID" \
+  --email user@company.com \
+  --start
 ```
 
 ### CI/CD Pipeline
 
 ```bash
-# Login non-interactively
-dbt-flink-ververica auth login \
-  --email "$VERVERICA_EMAIL" \
-  --password "$VERVERICA_PASSWORD" \
-  --no-save
-
-# Full workflow
+# Single command -- no separate auth step needed.
+# Password auth skips keyring entirely (ideal for CI/CD).
 dbt-flink-ververica workflow \
-  --name "pipeline-${CI_COMMIT_SHORT_SHA}" \
-  --workspace-id "$WORKSPACE_ID" \
+  --name-prefix "pipeline-${CI_COMMIT_SHORT_SHA}" \
+  --workspace-id "$VERVERICA_WORKSPACE_ID" \
   --namespace production \
   --email "$VERVERICA_EMAIL" \
-  --target prod
+  --password "$VERVERICA_PASSWORD" \
+  --target prod \
+  --parallelism 4 \
+  --start
+
+# Or use env vars (cleaner):
+export VERVERICA_EMAIL=ci@company.com
+export VERVERICA_PASSWORD=xxx
+export VERVERICA_WORKSPACE_ID=a1b2c3d4-...
+
+dbt-flink-ververica workflow \
+  --name-prefix prod \
+  --target prod \
+  --start
 ```
 
 ## See Also
