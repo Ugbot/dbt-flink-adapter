@@ -70,6 +70,10 @@
   {%- if contract_config.enforced -%}
     {{ get_table_columns_and_constraints() }}
   {%- endif %}
+  {% set partition_by = config.get('partition_by', none) %}
+  {% if partition_by is not none %}
+  PARTITIONED BY ({{ partition_by | join(', ') }})
+  {% endif %}
   {# Only emit WITH clause when there are connector properties to set #}
   {% if connector_properties %}
   with (

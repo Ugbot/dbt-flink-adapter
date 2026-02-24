@@ -61,6 +61,10 @@
         {{ generate_watermark_clause(watermark_config) }}
         {% endif %}
       )
+      {% set partition_by = config.get('partition_by', none) %}
+      {% if partition_by is not none %}
+      PARTITIONED BY ({{ partition_by | join(', ') }})
+      {% endif %}
       {% if connector_properties %}
       with (
         {% for property_name in connector_properties -%}
@@ -88,6 +92,10 @@
     {%- call statement('main') -%}
       /** mode('{{execution_mode}}') */ /** upgrade_mode('{{upgrade_mode}}') */ /** job_state('{{job_state}}') */
       create table {{ this.render() }}
+      {% set partition_by = config.get('partition_by', none) %}
+      {% if partition_by is not none %}
+      PARTITIONED BY ({{ partition_by | join(', ') }})
+      {% endif %}
       {% if connector_properties %}
       with (
         {% for property_name in connector_properties -%}

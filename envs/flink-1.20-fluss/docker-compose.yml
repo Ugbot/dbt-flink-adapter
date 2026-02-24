@@ -1,0 +1,124 @@
+# Docker Compose environment for testing Flink with Fluss streaming storage.
+#
+# Includes:
+#   - ZooKeeper (Fluss metadata store)
+#   - Fluss Coordinator Server + Tablet Server
+#   - Flink 1.20 cluster (JobManager + TaskManager + SQL Gateway)
+#
+# The apache/fluss-quickstart-flink image ships with:
+#   - Fluss Flink connector JAR
+#   - flink-connector-faker JAR
+#
+# No external JAR downloads needed.
+#
+# Usage:
+#   docker compose -f envs/flink-1.20-fluss/docker-compose.yml up -d
+#   # Wait for SQL Gateway: curl http://localhost:8083/v3/info
+#   FLUSS_AVAILABLE=1 pytest tests/functional/adapter/test_fluss_integration.py -v
+#   docker compose -f envs/flink-1.20-fluss/docker-compose.yml down -v
+
+version: '2'
+services:
+  zookeeper:
+    image: zookeeper:3.9.2
+    ports:
+      - "2181:2181"
+    environment:
+      ZOO_MY_ID: 1
+      ZOO_4LW_COMMANDS_WHITELIST: "ruok,stat"
+    healthcheck:
+      test: ["CMD-SHELL", "echo ruok | nc localhost 2181 | grep imok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  coordinator-server:
+    image: apache/fluss:0.8.0-incubating
+    command: coordinatorServer
+    ports:
+      - "9123:9123"
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    environment:
+      - |
+        FLUSS_PROPERTIES=
+        zookeeper.address: zookeeper:2181
+        coordinator.host: coordinator-server
+        remote.data.dir: /tmp/fluss/remote-data
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 9123 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  tablet-server:
+    image: apache/fluss:0.8.0-incubating
+    command: tabletServer
+    depends_on:
+      coordinator-server:
+        condition: service_healthy
+    environment:
+      - |
+        FLUSS_PROPERTIES=
+        zookeeper.address: zookeeper:2181
+        tablet-server.host: tablet-server
+        tablet-server.id: 0
+        data.dir: /tmp/fluss/data
+        remote.data.dir: /tmp/fluss/remote-data
+
+  jobmanager:
+    image: apache/fluss-quickstart-flink:1.20-0.8.0-incubating
+    command: jobmanager
+    ports:
+      - "8081:8081"
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: jobmanager
+        taskmanager.numberOfTaskSlots: 10
+        execution.checkpointing.interval: 10s
+        state.checkpoints.dir: file:///tmp/flink-checkpoints
+        state.savepoints.dir: file:///tmp/flink-savepoints
+
+  taskmanager:
+    image: apache/fluss-quickstart-flink:1.20-0.8.0-incubating
+    command: taskmanager
+    depends_on:
+      - jobmanager
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: jobmanager
+        taskmanager.numberOfTaskSlots: 10
+        execution.checkpointing.interval: 10s
+        state.checkpoints.dir: file:///tmp/flink-checkpoints
+        state.savepoints.dir: file:///tmp/flink-savepoints
+
+  sql-gateway:
+    image: apache/fluss-quickstart-flink:1.20-0.8.0-incubating
+    ports:
+      - "8083:8083"
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        /docker-entrypoint.sh
+        /opt/flink/bin/sql-gateway.sh start-foreground
+    depends_on:
+      - jobmanager
+      - coordinator-server
+      - tablet-server
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: jobmanager
+        rest.address: jobmanager
+        sql-gateway.endpoint.rest.address: 0.0.0.0
+        execution.checkpointing.interval: 10s
+        state.checkpoints.dir: file:///tmp/flink-checkpoints
+        state.savepoints.dir: file:///tmp/flink-savepoints
+
+networks:
+  default:
+    name: flink-fluss

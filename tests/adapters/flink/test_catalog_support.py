@@ -194,3 +194,67 @@ class TestConstraintSupport:
         """UNIQUE is supported as NOT_ENFORCED."""
         from dbt.adapters.base.impl import ConstraintSupport as CS
         assert FlinkAdapter.CONSTRAINT_SUPPORT[ConstraintType.unique] == CS.NOT_ENFORCED
+
+
+class TestFlussRelationPatterns:
+    """Tests for Fluss-style catalog relation rendering and PK constraints."""
+
+    def test_fluss_catalog_relation_rendering(self):
+        """Fluss 3-part relation renders as catalog.database.table."""
+        relation = FlinkRelation.create(
+            database="fluss_catalog",
+            schema="fluss_db",
+            identifier="user_dim",
+        )
+        rendered = relation.render()
+        assert "fluss_catalog" in rendered
+        assert "fluss_db" in rendered
+        assert "user_dim" in rendered
+        # Verify the ordering: catalog.database.table
+        parts = rendered.replace("`", "").split(".")
+        assert parts == ["fluss_catalog", "fluss_db", "user_dim"]
+
+    def test_fluss_pk_composite_with_partition(self):
+        """Composite PK (dt, metric_name) renders correctly for partitioned Fluss tables."""
+        adapter = FlinkAdapter.__new__(FlinkAdapter)
+        constraint = ModelLevelConstraint(
+            type=ConstraintType.primary_key,
+            columns=["dt", "metric_name"],
+        )
+        result = adapter.render_model_constraint(constraint)
+        assert result == "PRIMARY KEY (dt, metric_name) NOT ENFORCED"
+
+    def test_fluss_pk_single_column(self):
+        """Single-column PK (user_id) renders correctly for Fluss PrimaryKey tables."""
+        adapter = FlinkAdapter.__new__(FlinkAdapter)
+        constraint = ModelLevelConstraint(
+            type=ConstraintType.primary_key,
+            columns=["user_id"],
+        )
+        result = adapter.render_model_constraint(constraint)
+        assert result == "PRIMARY KEY (user_id) NOT ENFORCED"
+
+    def test_fluss_relation_without_catalog(self):
+        """Fluss relation without catalog renders as database.table."""
+        relation = FlinkRelation.create(
+            database=None,
+            schema="fluss_db",
+            identifier="events_log",
+        )
+        rendered = relation.render()
+        parts = rendered.replace("`", "").split(".")
+        assert parts == ["fluss_db", "events_log"]
+
+    def test_fluss_relation_equality(self):
+        """Two Fluss relations with same components should have matching render output."""
+        r1 = FlinkRelation.create(
+            database="fluss_catalog",
+            schema="fluss_db",
+            identifier="user_dim",
+        )
+        r2 = FlinkRelation.create(
+            database="fluss_catalog",
+            schema="fluss_db",
+            identifier="user_dim",
+        )
+        assert r1.render() == r2.render()

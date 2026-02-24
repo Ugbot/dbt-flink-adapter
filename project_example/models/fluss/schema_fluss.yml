@@ -1,0 +1,97 @@
+# Fluss example models schema definitions.
+#
+# These models demonstrate Fluss PrimaryKey tables (upsert/changelog),
+# Log tables (append-only), partitioned tables, and incremental append.
+#
+# Required dbt_project.yml hooks to set up the Fluss catalog:
+#
+#   on-run-start:
+#     - "{{ create_fluss_catalog('fluss_catalog', 'coordinator-server:9123') }}"
+#     - "{{ use_catalog('fluss_catalog') }}"
+#     - "{{ create_catalog_database('fluss_catalog', 'fluss_db') }}"
+#
+# Fluss table type is determined by the presence of PRIMARY KEY:
+#   - With PRIMARY KEY -> PrimaryKey table (upsert/changelog)
+#   - Without PRIMARY KEY -> Log table (append-only)
+
+version: 2
+
+models:
+  - name: fluss_user_dim
+    description: >
+      Fluss PrimaryKey table for user dimensions. Supports upsert writes
+      and generates changelogs for downstream consumers.
+    columns:
+      - name: user_id
+        description: Unique user identifier
+        data_type: BIGINT
+        tests:
+          - not_null
+      - name: name
+        description: User display name
+        data_type: STRING
+      - name: email
+        description: User email address
+        data_type: STRING
+      - name: registered_at
+        description: Registration timestamp
+        data_type: TIMESTAMP(3)
+
+  - name: fluss_events_log
+    description: >
+      Fluss Log table for raw event ingestion. Append-only semantics
+      with high-throughput writes.
+    columns:
+      - name: event_id
+        description: Unique event identifier
+        data_type: BIGINT
+        tests:
+          - not_null
+      - name: user_id
+        description: User who triggered the event
+        data_type: BIGINT
+        tests:
+          - not_null
+      - name: event_type
+        description: Type of event (e.g., click, purchase, login)
+        data_type: STRING
+      - name: event_time
+        description: Event timestamp
+        data_type: TIMESTAMP(3)
+
+  - name: fluss_daily_metrics
+    description: >
+      Fluss Partitioned PrimaryKey table for daily metric aggregations.
+      Partitioned by date string for efficient partition pruning.
+    columns:
+      - name: dt
+        description: Date partition key (YYYY-MM-DD format)
+        data_type: STRING
+        tests:
+          - not_null
+      - name: metric_name
+        description: Name of the metric
+        data_type: STRING
+        tests:
+          - not_null
+      - name: value
+        description: Metric value
+        data_type: DOUBLE
+
+  - name: fluss_event_counts
+    description: >
+      Incremental append model that aggregates event counts from the
+      events log table into 1-minute tumbling windows.
+    columns:
+      - name: event_type
+        description: Event type being counted
+        data_type: STRING
+      - name: event_count
+        description: Number of events in the window
+        data_type: BIGINT
+      - name: window_start
+        description: Start of the tumbling window
+        data_type: TIMESTAMP(3)
+      - name: window_end
+        description: End of the tumbling window
+        data_type: TIMESTAMP(3)
