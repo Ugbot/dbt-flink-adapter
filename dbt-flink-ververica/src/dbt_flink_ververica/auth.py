@@ -338,22 +338,55 @@ class AuthManager:
             CredentialManager.delete_credentials(email)
             logger.info("Credentials deleted from system keyring")
 
-    def get_valid_token(self, email: str) -> AuthToken:
+    def login_with_password(self, email: str, password: str) -> AuthToken:
+        """Login with explicit password, skipping keyring entirely.
+
+        This is the CI/CD-friendly auth path. The password is used directly
+        for authentication and is never stored in the keyring.
+
+        Args:
+            email: User email
+            password: User password (from CLI flag or env var)
+
+        Returns:
+            Valid AuthToken
+
+        Raises:
+            httpx.HTTPStatusError: If authentication fails
+        """
+        credentials = Credentials(email=email, password=password)
+        token = self.auth_client.authenticate_sync(credentials)
+        self._token = token
+        logger.info("Authenticated with explicit password (keyring not used)")
+        return token
+
+    def get_valid_token(self, email: str, password: Optional[str] = None) -> AuthToken:
         """Get a valid token, refreshing if necessary.
+
+        Tries authentication in priority order:
+        1. Return cached in-memory token if still valid
+        2. If password provided, authenticate directly (skips keyring)
+        3. Otherwise, re-authenticate with saved keyring credentials
 
         Args:
             email: User email for authentication
+            password: Optional explicit password (for CI/CD). If provided,
+                keyring is bypassed entirely.
 
         Returns:
             Valid AuthToken (may be refreshed)
 
         Raises:
-            ValueError: If no saved credentials and no existing token
+            ValueError: If no password provided and no saved credentials
         """
         # If we have a valid token, return it
         if self._token is not None and not self._token.is_expired:
             return self._token
 
-        # Otherwise, re-authenticate with saved credentials
+        # Re-authenticate
         logger.info("Token expired or missing, re-authenticating...")
+
+        if password is not None:
+            return self.login_with_password(email, password)
+
         return self.login_with_saved_credentials(email)

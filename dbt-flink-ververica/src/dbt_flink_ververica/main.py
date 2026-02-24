@@ -411,6 +411,69 @@ def compile_command(
 
 
 # ============================================================================
+# Helpers
+# ============================================================================
+
+def _load_config(config_file: Optional[Path]) -> Optional["ToolConfig"]:
+    """Load TOML config with fallback to default location.
+
+    Priority:
+    1. Explicit --config path
+    2. dbt-flink-ververica.toml in current working directory
+    3. None (no config)
+
+    Args:
+        config_file: Explicit path to config file, or None for auto-discovery
+
+    Returns:
+        Parsed ToolConfig, or None if no config found
+    """
+    from .config import ToolConfig
+
+    if config_file is not None:
+        if not config_file.exists():
+            raise FileNotFoundError(f"Config file not found: {config_file}")
+        logger.debug(f"Loading config from explicit path: {config_file}")
+        return ToolConfig.from_toml(config_file)
+
+    default_path = Path.cwd() / "dbt-flink-ververica.toml"
+    if default_path.exists():
+        logger.debug(f"Loading config from default path: {default_path}")
+        return ToolConfig.from_toml(default_path)
+
+    logger.debug("No config file found")
+    return None
+
+
+def _resolve_auth(
+    gateway_url: str,
+    email: str,
+    password: Optional[str],
+) -> "AuthToken":
+    """Resolve authentication using password or keyring.
+
+    Priority:
+    1. Explicit password (from --password flag or VERVERICA_PASSWORD env var)
+    2. Saved credentials in system keyring
+
+    Args:
+        gateway_url: Ververica Cloud gateway URL
+        email: User email
+        password: Explicit password, or None to use keyring
+
+    Returns:
+        Valid AuthToken
+
+    Raises:
+        ValueError: If no password and no saved credentials
+    """
+    from .auth import AuthManager
+
+    auth_manager = AuthManager(gateway_url)
+    return auth_manager.get_valid_token(email, password=password)
+
+
+# ============================================================================
 # Deploy Commands
 # ============================================================================
 
@@ -425,62 +488,99 @@ def deploy_command(
     sql_file: Optional[Path] = typer.Option(
         None,
         "--sql-file",
-        help="Path to SQL file to deploy (default: use compiled dbt SQL)",
-        exists=True,
+        help="Path to SQL file to deploy (default: auto-discover from target/ververica/)",
     ),
     workspace_id: str = typer.Option(
         ...,
         "--workspace-id",
+        envvar="VERVERICA_WORKSPACE_ID",
         help="Ververica workspace ID",
     ),
     namespace: str = typer.Option(
         "default",
         "--namespace",
+        envvar="VERVERICA_NAMESPACE",
         help="Ververica namespace",
     ),
     email: str = typer.Option(
         ...,
         "--email",
         "-e",
+        envvar="VERVERICA_EMAIL",
         help="Ververica Cloud email (for authentication)",
+    ),
+    password: Optional[str] = typer.Option(
+        None,
+        "--password",
+        "-p",
+        envvar="VERVERICA_PASSWORD",
+        help="Ververica Cloud password (for CI/CD; skips keyring)",
     ),
     gateway_url: str = typer.Option(
         "https://app.ververica.cloud",
         "--gateway-url",
+        envvar="VERVERICA_GATEWAY_URL",
         help="Ververica Cloud gateway URL",
     ),
     parallelism: int = typer.Option(
         1,
         "--parallelism",
         help="Job parallelism",
+        min=1,
+        max=1000,
+    ),
+    engine_version: str = typer.Option(
+        "vera-4.0.0-flink-1.20",
+        "--engine-version",
+        envvar="VERVERICA_ENGINE_VERSION",
+        help="Flink engine version",
+    ),
+    start: bool = typer.Option(
+        False,
+        "--start",
+        help="Auto-start the deployment after creation",
+    ),
+    project_dir: Path = typer.Option(
+        Path.cwd(),
+        "--project-dir",
+        help="Path to dbt project directory (for auto-discovery of compiled SQL)",
     ),
 ) -> None:
     """Deploy SQL to Ververica Cloud.
 
-    This creates a SQLSCRIPT deployment in Ververica Cloud with the compiled SQL.
-    Authentication credentials must be saved first (use 'auth login').
+    Creates a SQLSCRIPT deployment in Ververica Cloud. If --sql-file is not
+    provided, auto-discovers compiled SQL from target/ververica/{name}.sql.
     """
     from rich.progress import Progress, SpinnerColumn, TextColumn
-    from .auth import AuthManager
     from .client import VervericaClient, DeploymentSpec
 
-    console.print("[blue]ℹ[/blue] Deploying to Ververica Cloud...")
+    console.print("[blue]i[/blue] Deploying to Ververica Cloud...")
     console.print(f"Deployment name: {name}")
     console.print(f"Workspace: {workspace_id}")
     console.print(f"Namespace: {namespace}")
     console.print()
 
     try:
-        # Step 1: Read SQL file
-        if sql_file is None:
-            console.print("[red]✗[/red] No SQL file specified")
-            console.print("Use --sql-file to specify a SQL file to deploy")
-            console.print("Or run 'compile' first and this will deploy the compiled SQL")
-            raise typer.Exit(code=1)
+        # Step 1: Resolve SQL content
+        if sql_file is not None:
+            if not sql_file.exists():
+                console.print(f"[red]x[/red] SQL file not found: {sql_file}")
+                raise typer.Exit(code=1)
+            console.print(f"Reading SQL from: {sql_file}")
+            sql_content = sql_file.read_text(encoding='utf-8')
+        else:
+            # Auto-discover from target/ververica/
+            auto_path = project_dir / "target" / "ververica" / f"{name}.sql"
+            if auto_path.exists():
+                console.print(f"Auto-discovered SQL: {auto_path}")
+                sql_content = auto_path.read_text(encoding='utf-8')
+            else:
+                console.print("[red]x[/red] No SQL file specified and auto-discovery failed")
+                console.print(f"  Looked for: {auto_path}")
+                console.print("  Use --sql-file to specify a SQL file, or run 'compile' first")
+                raise typer.Exit(code=1)
 
-        console.print(f"Reading SQL from: {sql_file}")
-        sql_content = sql_file.read_text(encoding='utf-8')
-        console.print(f"[green]✓[/green] Read {len(sql_content)} characters")
+        console.print(f"[green]v[/green] Read {len(sql_content)} characters")
         console.print()
 
         # Step 2: Authenticate
@@ -490,13 +590,10 @@ def deploy_command(
             console=console,
         ) as progress:
             task = progress.add_task("Authenticating...", total=None)
-
-            auth_manager = AuthManager(gateway_url)
-            token = auth_manager.get_valid_token(email)
-
+            token = _resolve_auth(gateway_url, email, password)
             progress.update(task, completed=True)
 
-        console.print(f"[green]✓[/green] Authenticated as {email}")
+        console.print(f"[green]v[/green] Authenticated as {email}")
         console.print()
 
         # Step 3: Create deployment
@@ -507,39 +604,51 @@ def deploy_command(
         ) as progress:
             task = progress.add_task("Creating deployment...", total=None)
 
-            # Build deployment spec
             spec = DeploymentSpec(
                 name=name,
                 namespace=namespace,
                 sql_script=sql_content,
+                engine_version=engine_version,
                 parallelism=parallelism,
             )
 
-            # Create deployment
             with VervericaClient(gateway_url, workspace_id, token) as client:
                 status = client.create_sqlscript_deployment(spec)
 
+                # Step 4: Start if requested
+                if start:
+                    progress.update(task, description="Starting deployment...")
+                    client.start_deployment(
+                        namespace=namespace,
+                        deployment_id=status.deployment_id,
+                    )
+
             progress.update(task, completed=True)
 
-        console.print(f"[green]✓[/green] Deployment created successfully!")
+        console.print(f"[green]v[/green] Deployment created successfully!")
+        if start:
+            console.print(f"[green]v[/green] Deployment starting...")
         console.print()
         console.print(f"Deployment details:")
-        console.print(f"  • ID: {status.deployment_id}")
-        console.print(f"  • Name: {status.name}")
-        console.print(f"  • State: {status.state}")
-        console.print(f"  • Namespace: {namespace}")
+        console.print(f"  - ID: {status.deployment_id}")
+        console.print(f"  - Name: {status.name}")
+        console.print(f"  - State: {status.state}")
+        console.print(f"  - Engine: {engine_version}")
+        console.print(f"  - Namespace: {namespace}")
         console.print()
         console.print(f"View in Ververica Cloud:")
         console.print(f"  {gateway_url}/workspaces/{workspace_id}/deployments/{status.deployment_id}")
 
+    except typer.Exit:
+        raise
     except FileNotFoundError as e:
-        console.print(f"[red]✗[/red] File not found: {e}")
+        console.print(f"[red]x[/red] File not found: {e}")
         raise typer.Exit(code=1)
     except ValueError as e:
-        console.print(f"[red]✗[/red] {e}")
+        console.print(f"[red]x[/red] {e}")
         raise typer.Exit(code=1)
     except Exception as e:
-        console.print(f"[red]✗[/red] Deployment failed: {e}")
+        console.print(f"[red]x[/red] Deployment failed: {e}")
         logger.exception("Deployment error")
         raise typer.Exit(code=1)
 
@@ -550,11 +659,11 @@ def deploy_command(
 
 @app.command("workflow")
 def workflow_command(
-    name: str = typer.Option(
+    name_prefix: str = typer.Option(
         ...,
-        "--name",
+        "--name-prefix",
         "-n",
-        help="Deployment name",
+        help="Deployment name prefix (each model becomes {prefix}-{model_name})",
     ),
     project_dir: Path = typer.Option(
         Path.cwd(),
@@ -564,48 +673,139 @@ def workflow_command(
         file_okay=False,
         dir_okay=True,
     ),
-    workspace_id: str = typer.Option(
-        ...,
-        "--workspace-id",
-        help="Ververica workspace ID",
-    ),
-    namespace: str = typer.Option(
-        "default",
-        "--namespace",
-        help="Ververica namespace",
-    ),
-    email: str = typer.Option(
-        ...,
-        "--email",
-        "-e",
-        help="Ververica Cloud email",
+    profiles_dir: Optional[Path] = typer.Option(
+        None,
+        "--profiles-dir",
+        help="Path to dbt profiles directory",
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
     ),
     target: str = typer.Option(
         "dev",
         "--target",
         "-t",
-        help="dbt target",
+        help="dbt target to use for compilation",
+    ),
+    models: Optional[str] = typer.Option(
+        None,
+        "--models",
+        "-m",
+        help="Specific models to deploy (comma-separated)",
+    ),
+    workspace_id: Optional[str] = typer.Option(
+        None,
+        "--workspace-id",
+        envvar="VERVERICA_WORKSPACE_ID",
+        help="Ververica workspace ID",
+    ),
+    namespace: str = typer.Option(
+        "default",
+        "--namespace",
+        envvar="VERVERICA_NAMESPACE",
+        help="Ververica namespace",
+    ),
+    email: Optional[str] = typer.Option(
+        None,
+        "--email",
+        "-e",
+        envvar="VERVERICA_EMAIL",
+        help="Ververica Cloud email",
+    ),
+    password: Optional[str] = typer.Option(
+        None,
+        "--password",
+        "-p",
+        envvar="VERVERICA_PASSWORD",
+        help="Ververica Cloud password (for CI/CD; skips keyring)",
+    ),
+    gateway_url: Optional[str] = typer.Option(
+        None,
+        "--gateway-url",
+        envvar="VERVERICA_GATEWAY_URL",
+        help="Ververica Cloud gateway URL",
+    ),
+    parallelism: int = typer.Option(
+        1,
+        "--parallelism",
+        help="Job parallelism",
+        min=1,
+        max=1000,
+    ),
+    engine_version: Optional[str] = typer.Option(
+        None,
+        "--engine-version",
+        envvar="VERVERICA_ENGINE_VERSION",
+        help="Flink engine version (e.g. vera-4.0.0-flink-1.20)",
+    ),
+    start: bool = typer.Option(
+        False,
+        "--start",
+        help="Auto-start deployments after creation",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Compile and show SQL without deploying",
+    ),
+    config_file: Optional[Path] = typer.Option(
+        None,
+        "--config",
+        "-c",
+        help="Path to TOML config file for defaults",
     ),
 ) -> None:
-    """Run complete workflow: compile + deploy.
+    """Run complete workflow: compile, transform, authenticate, deploy per-model.
 
-    This is a convenience command that runs 'compile' followed by 'deploy'
-    in a single operation.
+    Each dbt model becomes its own Ververica SQLSCRIPT deployment, named
+    {name-prefix}-{model_name}. This matches VVC's model where one SQLSCRIPT
+    deployment = one Flink job.
+
+    Config priority: CLI flags > env vars > TOML config > defaults.
     """
     import subprocess
     from rich.progress import Progress, SpinnerColumn, TextColumn
+    from rich.table import Table
     from .sql_processor import DbtArtifactReader, SqlProcessor
-    from .auth import AuthManager
     from .client import VervericaClient, DeploymentSpec
 
-    console.print("[blue]ℹ[/blue] Running full workflow (compile + deploy)...")
-    console.print()
-
     try:
-        # Step 1: Run dbt compile
-        console.print("[bold]Step 1: Compile dbt models[/bold]")
-        console.print()
+        # ── Step 0: Load config & merge defaults ──────────────────────
+        config = _load_config(config_file)
 
+        if config is not None:
+            console.print(f"[blue]i[/blue] Loaded config: {config_file or 'dbt-flink-ververica.toml'}")
+
+        # Merge: CLI flag > env var (handled by typer envvar) > TOML > hardcoded default
+        if gateway_url is None:
+            gateway_url = config.ververica.gateway_url if config else "https://app.ververica.cloud"
+        if workspace_id is None:
+            workspace_id = config.ververica.workspace_id if config else None
+        if engine_version is None:
+            engine_version = (
+                config.ververica.default_engine_version
+                if config
+                else "vera-4.0.0-flink-1.20"
+            )
+
+        # Validate required fields (not needed for dry-run)
+        if not dry_run:
+            if not email:
+                console.print("[red]x[/red] --email is required (or set VERVERICA_EMAIL)")
+                raise typer.Exit(code=1)
+            if not workspace_id:
+                console.print("[red]x[/red] --workspace-id is required (or set VERVERICA_WORKSPACE_ID)")
+                raise typer.Exit(code=1)
+
+        # Parse model selector
+        model_list = None
+        if models:
+            model_list = [m.strip() for m in models.split(",")]
+
+        console.print()
+        console.print("[bold]Step 1/5: Compile dbt models[/bold]")
+
+        # ── Step 1: Compile ───────────────────────────────────────────
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -614,6 +814,12 @@ def workflow_command(
             task = progress.add_task("Running dbt compile...", total=None)
 
             dbt_cmd = ["dbt", "compile", "--target", target]
+            if profiles_dir:
+                dbt_cmd.extend(["--profiles-dir", str(profiles_dir)])
+            if models:
+                dbt_cmd.extend(["--models", models])
+
+            logger.debug(f"Running: {' '.join(dbt_cmd)}")
 
             try:
                 result = subprocess.run(
@@ -621,43 +827,40 @@ def workflow_command(
                     cwd=project_dir,
                     capture_output=True,
                     text=True,
-                    timeout=300,  # 5 minute timeout
+                    timeout=300,
                 )
             except subprocess.TimeoutExpired:
                 progress.update(task, completed=True)
-                console.print("[red]✗[/red] dbt compile timed out after 5 minutes")
+                console.print("[red]x[/red] dbt compile timed out after 5 minutes")
                 raise typer.Exit(code=1)
             except FileNotFoundError:
                 progress.update(task, completed=True)
-                console.print("[red]✗[/red] dbt command not found. Is dbt installed?")
+                console.print("[red]x[/red] dbt command not found. Is dbt installed?")
                 raise typer.Exit(code=1)
             except Exception as e:
                 progress.update(task, completed=True)
-                console.print(f"[red]✗[/red] Failed to run dbt compile: {e}")
+                console.print(f"[red]x[/red] Failed to run dbt compile: {e}")
                 raise typer.Exit(code=1)
 
             progress.update(task, completed=True)
 
             if result.returncode != 0:
-                console.print("[red]✗[/red] dbt compile failed")
+                console.print("[red]x[/red] dbt compile failed")
                 console.print(result.stderr)
                 raise typer.Exit(code=1)
 
-        console.print("[green]✓[/green] dbt compile successful")
+        console.print("[green]v[/green] dbt compile successful")
         console.print()
 
-        # Step 2: Read and process models
-        console.print("[bold]Step 2: Process SQL[/bold]")
-        console.print()
+        # ── Step 2: Transform ─────────────────────────────────────────
+        console.print("[bold]Step 2/5: Process SQL[/bold]")
 
         reader = DbtArtifactReader(project_dir, target)
-        compiled_models = reader.find_compiled_models()
+        compiled_models = reader.find_compiled_models(model_list)
 
         if not compiled_models:
             console.print("[yellow]![/yellow] No compiled models found")
             raise typer.Exit(code=0)
-
-        console.print(f"Found {len(compiled_models)} models")
 
         processor = SqlProcessor(
             strip_hints=True,
@@ -667,81 +870,120 @@ def workflow_command(
         )
 
         processed_models = reader.process_models(compiled_models, processor)
-        console.print(f"[green]✓[/green] Processed {len(processed_models)} models")
-        console.print()
-
-        # Step 3: Combine SQL
-        console.print("[bold]Step 3: Combine SQL[/bold]")
-        console.print()
-
-        combined_sql_parts = []
-        combined_sql_parts.append("-- Combined SQL from dbt-flink models")
-        combined_sql_parts.append(f"-- Generated: {target}")
-        combined_sql_parts.append(f"-- Models: {len(processed_models)}")
-        combined_sql_parts.append("")
 
         for model in processed_models:
-            if model.processed:
-                combined_sql_parts.append(f"-- Model: {model.name}")
-                combined_sql_parts.append(model.processed.final_sql)
-                combined_sql_parts.append("")
-                combined_sql_parts.append("-- " + "-" * 70)
-                combined_sql_parts.append("")
-
-        combined_sql = "\n".join(combined_sql_parts)
-        console.print(f"[green]✓[/green] Combined SQL: {len(combined_sql)} characters")
-        console.print()
-
-        # Step 4: Authenticate
-        console.print("[bold]Step 4: Authenticate[/bold]")
-        console.print()
-
-        auth_manager = AuthManager("https://app.ververica.cloud")
-        token = auth_manager.get_valid_token(email)
-
-        console.print(f"[green]✓[/green] Authenticated as {email}")
-        console.print()
-
-        # Step 5: Deploy
-        console.print("[bold]Step 5: Deploy to Ververica Cloud[/bold]")
-        console.print()
-
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console,
-        ) as progress:
-            task = progress.add_task("Creating deployment...", total=None)
-
-            spec = DeploymentSpec(
-                name=name,
-                namespace=namespace,
-                sql_script=combined_sql,
-                parallelism=1,
+            hint_count = len(model.processed.hints) if model.processed else 0
+            set_count = len(model.processed.set_statements) if model.processed else 0
+            console.print(
+                f"  [green]v[/green] {model.name}: "
+                f"{hint_count} hints -> {set_count} SET statements"
             )
 
-            with VervericaClient("https://app.ververica.cloud", workspace_id, token) as client:
+        console.print()
+
+        # Write processed SQL to target/ververica/ for reference
+        output_dir = project_dir / "target" / "ververica"
+        for model in processed_models:
+            reader.write_processed_sql(model, output_dir)
+
+        # ── Dry-run exit ──────────────────────────────────────────────
+        if dry_run:
+            console.print("[bold]-- DRY RUN: showing processed SQL --[/bold]")
+            console.print()
+
+            for model in processed_models:
+                if model.processed:
+                    deployment_name = f"{name_prefix}-{model.name}"
+                    console.print(f"[bold cyan]{deployment_name}[/bold cyan]")
+                    console.print(model.processed.final_sql)
+                    console.print()
+
+            console.print(f"[green]v[/green] Dry run complete. {len(processed_models)} models processed.")
+            console.print(f"SQL written to: {output_dir}")
+            raise typer.Exit(code=0)
+
+        # ── Step 3: Authenticate ──────────────────────────────────────
+        console.print("[bold]Step 3/5: Authenticate[/bold]")
+
+        token = _resolve_auth(gateway_url, email, password)
+
+        console.print(f"[green]v[/green] Authenticated as {email}")
+        console.print()
+
+        # ── Step 4: Deploy per-model ──────────────────────────────────
+        console.print("[bold]Step 4/5: Deploy to Ververica Cloud[/bold]")
+
+        deployed = []
+
+        with VervericaClient(gateway_url, workspace_id, token) as client:
+            for model in processed_models:
+                if not model.processed:
+                    continue
+
+                deployment_name = f"{name_prefix}-{model.name}"
+
+                spec = DeploymentSpec(
+                    name=deployment_name,
+                    namespace=namespace,
+                    sql_script=model.processed.final_sql,
+                    engine_version=engine_version,
+                    parallelism=parallelism,
+                )
+
                 status = client.create_sqlscript_deployment(spec)
+                deployed.append(status)
+                console.print(
+                    f"  [green]v[/green] {deployment_name} -> "
+                    f"{status.deployment_id} [CREATED]"
+                )
 
-            progress.update(task, completed=True)
+            console.print()
 
-        console.print(f"[green]✓[/green] Deployment created successfully!")
+            # ── Step 5: Start jobs (optional) ─────────────────────────
+            if start:
+                console.print("[bold]Step 5/5: Start jobs[/bold]")
+
+                for status in deployed:
+                    client.start_deployment(
+                        namespace=namespace,
+                        deployment_id=status.deployment_id,
+                    )
+                    console.print(
+                        f"  [green]v[/green] {status.name} -> STARTING"
+                    )
+
+                console.print()
+            else:
+                console.print("[bold]Step 5/5: Start jobs[/bold]")
+                console.print("  [yellow]![/yellow] Skipped (use --start to auto-start)")
+                console.print()
+
+        # ── Summary ───────────────────────────────────────────────────
+        summary_table = Table(title="Workflow Summary")
+        summary_table.add_column("Model", style="cyan")
+        summary_table.add_column("Deployment ID")
+        summary_table.add_column("Status", style="green")
+
+        for status in deployed:
+            state = "STARTING" if start else "CREATED"
+            summary_table.add_row(status.name, status.deployment_id, state)
+
+        console.print(summary_table)
         console.print()
-        console.print(f"[bold]Deployment Summary[/bold]")
-        console.print(f"  • ID: {status.deployment_id}")
-        console.print(f"  • Name: {status.name}")
-        console.print(f"  • State: {status.state}")
-        console.print(f"  • Namespace: {namespace}")
-        console.print(f"  • Models: {len(processed_models)}")
-        console.print()
-        console.print(f"View in Ververica Cloud:")
-        console.print(f"  https://app.ververica.cloud/workspaces/{workspace_id}/deployments/{status.deployment_id}")
+        console.print(f"Deployed: {len(deployed)} models")
+        if start:
+            console.print(f"Started: {len(deployed)} jobs")
+        console.print(
+            f"View: {gateway_url}/workspaces/{workspace_id}/"
+        )
 
+    except typer.Exit:
+        raise
     except FileNotFoundError as e:
-        console.print(f"[red]✗[/red] {e}")
+        console.print(f"[red]x[/red] {e}")
         raise typer.Exit(code=1)
     except Exception as e:
-        console.print(f"[red]✗[/red] Workflow failed: {e}")
+        console.print(f"[red]x[/red] Workflow failed: {e}")
         logger.exception("Workflow error")
         raise typer.Exit(code=1)
 
