@@ -131,16 +131,23 @@ class FlinkAdapter(BaseAdapter):
         """
         Render a model-level (table-level) constraint for Flink SQL.
 
-        Flink doesn't support table-level constraints in DDL.
+        Flink supports PRIMARY KEY constraints with NOT ENFORCED semantics.
+        This is required by catalog-based connectors (Paimon, Iceberg, Fluss)
+        and upsert-capable connectors (upsert-kafka) to define changelog/upsert
+        behavior.
 
         Args:
             constraint: Model-level constraint
 
         Returns:
-            Empty string (Flink doesn't support table-level constraints)
+            Constraint SQL clause for PRIMARY KEY, empty string for others
         """
-        # Flink doesn't support table-level constraints like PRIMARY KEY or UNIQUE
-        # at the table level in CREATE TABLE statements
+        if constraint.type == ConstraintType.primary_key:
+            columns = ", ".join(constraint.columns)
+            return f"PRIMARY KEY ({columns}) NOT ENFORCED"
+
+        # Other model-level constraints (unique, check, foreign_key) are not
+        # supported in Flink DDL
         return ""
 
     def create_schema(self, relation: BaseRelation):

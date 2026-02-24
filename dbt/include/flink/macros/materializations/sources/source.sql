@@ -4,9 +4,11 @@
 {% set flink_source_sql %}
 {% set connector_properties = node.config.get('default_connector_properties', {}) %}
 {% set _dummy = connector_properties.update(node.config.get('connector_properties', {})) %}
+{% set catalog_managed = node.config.get('catalog_managed', false) %}
 {% set watermark_properties = node.config.get('watermark') %}
 {% set type = node.config.get('type', None) %}
 {% set table_column_ids = node.columns.keys() %}
+{% if not catalog_managed %}
 /** drop_statement('DROP TABLE IF EXISTS `{{ node.identifier }}`') */
 CREATE TABLE {{ node.identifier }} {% if type %}/** mode('{{type}}')*/{% endif %} (
 {% for column_id in table_column_ids %}
@@ -18,10 +20,15 @@ CREATE TABLE {{ node.identifier }} {% if type %}/** mode('{{type}}')*/{% endif %
 {% endfor %}
 {%- if watermark_properties %}, WATERMARK FOR {{ watermark_properties['column']}} AS {{ watermark_properties['strategy']}} {% endif %}
 )
+{% if connector_properties %}
 with (
 {% for property_name in connector_properties %} '{{ property_name }}' = '{{ connector_properties[property_name] }}'{% if not loop.last %},{% endif %}
 {% endfor %}
-);
+)
+{% endif %};
+{% else %}
+{{ log("Source " ~ node.identifier ~ " is catalog-managed, skipping CREATE TABLE") }}
+{% endif %}
 {% endset %}
 {{ log("Source " ~ node.identifier ~ " creation ... ") }}
 {% set source_creation_results = run_query(flink_source_sql) %}

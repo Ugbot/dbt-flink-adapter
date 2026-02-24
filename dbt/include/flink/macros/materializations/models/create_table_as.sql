@@ -22,6 +22,7 @@
   {% set type = config.get('type', None) %}
   {%- set sql_header = config.get('sql_header', none) -%}
   {%- set execution_mode = config.get('execution_mode', 'batch') -%}
+  {%- set catalog_managed = config.get('catalog_managed', false) -%}
 
   {# dbt-core 1.5+ model contracts support #}
   {%- set contract_config = config.get('contract') -%}
@@ -37,12 +38,12 @@
   {% set _dummy = connector_properties.update(config.get('properties', {})) %}
 
   {# Validate batch mode configuration #}
-  {% if execution_mode == 'batch' %}
+  {% if execution_mode == 'batch' and not catalog_managed %}
     {{ validate_batch_mode(execution_mode, connector_properties) }}
   {% endif %}
 
-  {# If no connector specified, use blackhole as default for testing #}
-  {% if not connector_properties.get('connector') %}
+  {# If no connector specified and not catalog-managed, use blackhole as default #}
+  {% if not catalog_managed and not connector_properties.get('connector') %}
     {% set _dummy = connector_properties.update({
       'connector': 'blackhole'
     }) %}
@@ -62,20 +63,22 @@
     drop {% if temporary: -%}temporary {%- endif %}table if exists {{ this.render() }}
   {%- endcall %}
 
-  {# Step 2: CREATE TABLE AS SELECT with connector #}
-  {# If contract is defined, use explicit column definitions from contract #}
+  {# Step 2: CREATE TABLE AS SELECT #}
   /** mode('{{execution_mode}}') */ /** upgrade_mode('{{upgrade_mode}}') */ /** job_state('{{job_state}}') */
   /** drop_statement('drop {% if temporary: -%}temporary {%- endif %}table if exists `{{ this.render() }}`') */
   create {% if temporary: -%}temporary {%- endif %}table {{ this.render() }}
   {%- if contract_config.enforced -%}
     {{ get_table_columns_and_constraints() }}
   {%- endif %}
+  {# Only emit WITH clause when there are connector properties to set #}
+  {% if connector_properties %}
   with (
     {% for property_name in connector_properties -%}
     '{{ property_name }}' = '{{ connector_properties[property_name] }}'
     {%- if not loop.last %},{% endif %}
     {% endfor %}
   )
+  {% endif %}
   as
     {{ sql }}
 {%- endmacro %}

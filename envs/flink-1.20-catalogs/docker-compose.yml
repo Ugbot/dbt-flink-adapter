@@ -1,0 +1,109 @@
+# Docker Compose environment for testing Flink with catalog-based connectors.
+#
+# Includes:
+#   - Flink 1.20.3 cluster (JobManager + TaskManager + SQL Gateway)
+#   - Kafka (for Kafka connector / upsert-kafka tests)
+#   - Connector JARs: Paimon, Iceberg, Kafka
+#
+# Note: Fluss requires a separate Fluss coordinator/tablet server and is not
+# included here. Fluss integration tests should use a dedicated Fluss cluster.
+#
+# Usage:
+#   docker compose -f envs/flink-1.20-catalogs/docker-compose.yml up -d
+#   # Wait for SQL Gateway to be ready on port 8083
+#   pytest tests/ -k "catalog" --flink-host=localhost --flink-port=8083
+#   docker compose -f envs/flink-1.20-catalogs/docker-compose.yml down -v
+
+version: '2'
+services:
+  jobmanager:
+    image: flink:1.20.3-scala_2.12
+    command: jobmanager
+    ports:
+      - "8081:8081"
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: jobmanager
+        taskmanager.numberOfTaskSlots: 10
+        execution.checkpointing.interval: 10s
+        state.checkpoints.dir: file:///tmp/flink-checkpoints
+        state.savepoints.dir: file:///tmp/flink-savepoints
+    volumes:
+      # Kafka connector
+      - ../flink-1.20/opt/flink-sql-connector-kafka-3.3.0-1.20.jar:/opt/flink/lib/flink-sql-connector-kafka-3.3.0-1.20.jar
+      # Paimon connector (users must download and place in this directory)
+      - ./lib/paimon-flink-1.20-1.1.0.jar:/opt/flink/lib/paimon-flink-1.20-1.1.0.jar
+      # Iceberg connector (users must download and place in this directory)
+      - ./lib/iceberg-flink-runtime-1.20-1.7.1.jar:/opt/flink/lib/iceberg-flink-runtime-1.20-1.7.1.jar
+      # Shared warehouse directory for Paimon/Iceberg filesystem catalogs
+      - warehouse-data:/tmp/warehouse
+
+  taskmanager:
+    image: flink:1.20.3-scala_2.12
+    command: taskmanager
+    depends_on:
+      - jobmanager
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: jobmanager
+        taskmanager.numberOfTaskSlots: 10
+        execution.checkpointing.interval: 10s
+        state.checkpoints.dir: file:///tmp/flink-checkpoints
+        state.savepoints.dir: file:///tmp/flink-savepoints
+    volumes:
+      - ../flink-1.20/opt/flink-sql-connector-kafka-3.3.0-1.20.jar:/opt/flink/lib/flink-sql-connector-kafka-3.3.0-1.20.jar
+      - ./lib/paimon-flink-1.20-1.1.0.jar:/opt/flink/lib/paimon-flink-1.20-1.1.0.jar
+      - ./lib/iceberg-flink-runtime-1.20-1.7.1.jar:/opt/flink/lib/iceberg-flink-runtime-1.20-1.7.1.jar
+      - warehouse-data:/tmp/warehouse
+
+  sql-gateway:
+    image: flink:1.20.3-scala_2.12
+    ports:
+      - "8083:8083"
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        /docker-entrypoint.sh
+        /opt/flink/bin/sql-gateway.sh start-foreground
+    depends_on:
+      - jobmanager
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: jobmanager
+        rest.address: jobmanager
+        sql-gateway.endpoint.rest.address: 0.0.0.0
+        execution.checkpointing.interval: 10s
+        state.checkpoints.dir: file:///tmp/flink-checkpoints
+        state.savepoints.dir: file:///tmp/flink-savepoints
+    volumes:
+      - ../flink-1.20/opt/flink-sql-connector-kafka-3.3.0-1.20.jar:/opt/flink/lib/flink-sql-connector-kafka-3.3.0-1.20.jar
+      - ./lib/paimon-flink-1.20-1.1.0.jar:/opt/flink/lib/paimon-flink-1.20-1.1.0.jar
+      - ./lib/iceberg-flink-runtime-1.20-1.7.1.jar:/opt/flink/lib/iceberg-flink-runtime-1.20-1.7.1.jar
+      - warehouse-data:/tmp/warehouse
+
+  kafka:
+    image: confluentinc/cp-kafka:7.7.1
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      CLUSTER_ID: dbt-flink-adapter-test
+
+volumes:
+  warehouse-data:
+
+networks:
+  default:
+    name: flink-catalogs

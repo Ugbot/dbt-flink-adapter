@@ -6,6 +6,7 @@
   {%- set tmp_relation = make_temp_relation(target_relation) -%}
   {%- set incremental_strategy = config.get('incremental_strategy', default='append') -%}
   {%- set execution_mode = config.get('execution_mode', 'batch') -%}
+  {%- set on_schema_change = config.get('on_schema_change', 'ignore') -%}
 
   {{ run_hooks(pre_hooks, inside_transaction=False) }}
   {{ run_hooks(pre_hooks, inside_transaction=True) }}
@@ -39,6 +40,21 @@
       {{ get_assert_columns_equivalent(sql) }}
     {%- endif -%}
 
+    {# Handle schema evolution if configured #}
+    {% set valid_on_schema_change = ['ignore', 'fail', 'append_new_columns', 'sync_all_columns'] %}
+    {% if on_schema_change not in valid_on_schema_change %}
+      {% do exceptions.raise_compiler_error(
+        'Invalid on_schema_change: "' ~ on_schema_change ~ '". ' ~
+        'Valid modes: ' ~ valid_on_schema_change | join(', ')
+      ) %}
+    {% endif %}
+
+    {% if on_schema_change != 'ignore' %}
+      {% set source_columns = get_columns_from_query(sql) %}
+      {% set target_columns = get_target_columns(target_relation) %}
+      {% set schema_changed = check_schema_changes(source_columns, target_columns, on_schema_change) %}
+    {% endif %}
+
     {# Execute strategy-specific logic #}
     {% if incremental_strategy == 'append' %}
 
@@ -67,9 +83,22 @@
 
         INSERT OVERWRITE {{ target_relation }}
         {% if partition_by is not none %}
-          {# Partition-aware overwrite - more efficient for partitioned tables #}
-          {# Note: This requires the table to be partitioned by these columns #}
-          PARTITION ({{ partition_by | join(', ') }})
+          {# Check for partition transform expressions (contain parentheses) #}
+          {# e.g., days(ts), bucket(4, id) — these are not valid in PARTITION clause #}
+          {# Only simple column names are valid in INSERT OVERWRITE ... PARTITION (...) #}
+          {% set partition_joined = partition_by | join(',') %}
+          {% if '(' not in partition_joined %}
+            {# Simple column partitioning - use explicit PARTITION clause #}
+            PARTITION ({{ partition_by | join(', ') }})
+          {% else %}
+            {# Transform expressions detected - rely on dynamic partition overwrite #}
+            {{ log(
+              'INFO: Partition transforms detected in partition_by (' ~
+              partition_by | join(', ') ~ '). ' ~
+              'Using dynamic partition overwrite instead of explicit PARTITION clause.',
+              info=true
+            ) }}
+          {% endif %}
         {% endif %}
         {{ sql }}
       {%- endcall -%}
@@ -87,19 +116,22 @@
         ) %}
       {% endif %}
 
-      {# Validate connector supports upsert #}
-      {% set connector_props = config.get('connector_properties', {}) %}
-      {% set connector_type = connector_props.get('connector', 'unknown') %}
-      {% set upsert_connectors = ['upsert-kafka', 'jdbc', 'upsert-jdbc'] %}
+      {# Validate connector supports upsert (skip for catalog-managed tables) #}
+      {% set catalog_managed = config.get('catalog_managed', false) %}
+      {% if not catalog_managed %}
+        {% set connector_props = config.get('connector_properties', {}) %}
+        {% set connector_type = connector_props.get('connector', 'unknown') %}
+        {% set upsert_connectors = ['upsert-kafka', 'jdbc', 'upsert-jdbc'] %}
 
-      {% if connector_type not in upsert_connectors %}
-        {% do log(
-          'WARNING: incremental_strategy="merge" works best with upsert-capable connectors: ' ~
-          upsert_connectors | join(', ') ~ '. ' ~
-          'Current connector: "' ~ connector_type ~ '". ' ~
-          'Ensure your connector supports UPSERT semantics via PRIMARY KEY.',
-          info=true
-        ) %}
+        {% if connector_type not in upsert_connectors %}
+          {% do log(
+            'WARNING: incremental_strategy="merge" works best with upsert-capable connectors: ' ~
+            upsert_connectors | join(', ') ~ '. ' ~
+            'Current connector: "' ~ connector_type ~ '". ' ~
+            'Ensure your connector supports UPSERT semantics via PRIMARY KEY.',
+            info=true
+          ) %}
+        {% endif %}
       {% endif %}
 
       {# For upsert connectors, INSERT acts as UPSERT based on primary key #}

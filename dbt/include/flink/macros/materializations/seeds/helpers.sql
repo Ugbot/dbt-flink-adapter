@@ -6,6 +6,7 @@
 {% macro default__create_csv_table(model, agate_table) %}
   {%- set column_override = model['config'].get('column_types', {}) -%}
   {%- set quote_seed_column = model['config'].get('quote_columns', None) -%}
+  {%- set catalog_managed = model['config'].get('catalog_managed', false) -%}
   {% set connector_properties = config.get('default_connector_properties', {}) %}
   {% set _dummy = connector_properties.update(config.get('connector_properties', {})) %}
 
@@ -17,10 +18,12 @@
             {%- set column_name = (col_name | string) -%}
             {{ adapter.quote_seed_column(column_name, quote_seed_column) }} {{ type }} {%- if not loop.last -%}, {%- endif -%}
         {%- endfor -%}
-    ) with (
+    )
+    {%- if connector_properties %} with (
       {% for property_name in connector_properties %} '{{ property_name }}' = '{{ connector_properties[property_name] }}'{% if not loop.last %},{% endif %}
       {% endfor %}
     )
+    {%- endif %}
   {% endset %}
 
   {% call statement('_') -%}

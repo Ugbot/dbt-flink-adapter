@@ -18,13 +18,15 @@
     {{ get_assert_columns_equivalent(sql) }}
   {%- endif -%}
 
+  {%- set catalog_managed = config.get('catalog_managed', false) -%}
+
   {# Collect connector properties #}
   {% set connector_properties = config.get('default_connector_properties', {}) %}
   {% set _dummy = connector_properties.update(config.get('connector_properties', {})) %}
   {% set _dummy = connector_properties.update(config.get('properties', {})) %}
 
-  {# Default to Kafka for streaming if not specified #}
-  {% if not connector_properties.get('connector') %}
+  {# Default to Kafka for streaming if not specified and not catalog-managed #}
+  {% if not catalog_managed and not connector_properties.get('connector') %}
     {% set _dummy = connector_properties.update({
       'connector': 'kafka'
     }) %}
@@ -59,12 +61,14 @@
         {{ generate_watermark_clause(watermark_config) }}
         {% endif %}
       )
+      {% if connector_properties %}
       with (
         {% for property_name in connector_properties -%}
         '{{ property_name }}' = '{{ connector_properties[property_name] }}'
         {%- if not loop.last %},{% endif %}
         {% endfor %}
       )
+      {% endif %}
     {%- endcall -%}
 
     {# Step 3: INSERT INTO from query #}
@@ -84,12 +88,14 @@
     {%- call statement('main') -%}
       /** mode('{{execution_mode}}') */ /** upgrade_mode('{{upgrade_mode}}') */ /** job_state('{{job_state}}') */
       create table {{ this.render() }}
+      {% if connector_properties %}
       with (
         {% for property_name in connector_properties -%}
         '{{ property_name }}' = '{{ connector_properties[property_name] }}'
         {%- if not loop.last %},{% endif %}
         {% endfor %}
       )
+      {% endif %}
       as
         {{ sql }}
     {%- endcall -%}

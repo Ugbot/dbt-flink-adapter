@@ -65,6 +65,38 @@
         info=true
       ) %}
     {% endif %}
+
+  {% elif connector_type == 'paimon' %}
+    {# Paimon tables are naturally bounded for batch reads (snapshot scanning) #}
+    {# Hint: users can set scan.mode for time-travel or incremental reads #}
+    {% if 'scan.mode' not in batch_properties %}
+      {% do log(
+        'INFO: Paimon batch source using default snapshot scan. ' ~
+        'Set scan.mode to "from-snapshot" or "from-timestamp" for incremental batch reads.',
+        info=true
+      ) %}
+    {% endif %}
+
+  {% elif connector_type == 'iceberg' %}
+    {# Iceberg tables are naturally bounded for batch reads #}
+    {% set scan_mode = batch_properties.get('streaming', 'false') %}
+    {% if scan_mode == 'true' %}
+      {% do log(
+        'WARNING: Iceberg source has streaming=true in batch mode. ' ~
+        'Set streaming=false or remove the property for bounded batch reads.',
+        info=true
+      ) %}
+    {% endif %}
+
+  {% elif connector_type == 'fluss' %}
+    {# Fluss tables: batch reads depend on scan.startup.mode #}
+    {% if 'scan.startup.mode' not in batch_properties %}
+      {% do log(
+        'INFO: Fluss batch source using default scan startup mode. ' ~
+        'Set scan.startup.mode to "initial" to read full table snapshot.',
+        info=true
+      ) %}
+    {% endif %}
   {% endif %}
 
   {{ return(batch_properties) }}
