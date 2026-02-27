@@ -5,7 +5,7 @@
     config(
         materialized='streaming_table',
         execution_mode='streaming',
-        schema='''
+        columns='''
             window_start TIMESTAMP(3),
             window_end TIMESTAMP(3),
             cumulative_count BIGINT,

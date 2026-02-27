@@ -15,6 +15,7 @@
 {% macro default__create_view_as(relation, sql) -%}
   {% set type = config.get('type', None) %}
   {%- set sql_header = config.get('sql_header', none) -%}
+  {%- set catalog_managed = config.get('catalog_managed', false) -%}
 
   {# dbt-core 1.5+ model contracts support #}
   {%- set contract_config = config.get('contract') -%}
@@ -25,8 +26,8 @@
   {%- endif -%}
 
   {{ sql_header if sql_header is not none }}
-  /** drop_statement('drop view if exists `{{ this.render() }}`') */
-  create view {{ this.render() }} {% if type %}/** mode('{{type}}')*/{% endif %} as (
+  /** drop_statement('drop {{ flink__temporary_keyword(catalog_managed) }}view if exists {{ this.render() }}') */
+  create {{ flink__temporary_keyword(catalog_managed) }}view {{ this.render() }} {% if type %}/** mode('{{type}}')*/{% endif %} as (
     {{ sql }}
   );
 {%- endmacro %}

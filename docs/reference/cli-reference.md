@@ -279,6 +279,7 @@ dbt-flink-ververica deploy [OPTIONS]
 | `--parallelism` | -- | integer | `1` | -- | No | Flink job parallelism (1-1000). |
 | `--engine-version` | -- | string | `vera-4.0.0-flink-1.20` | `VERVERICA_ENGINE_VERSION` | No | Flink engine version. |
 | `--start` | -- | flag | `False` | -- | No | Auto-start the deployment after creation. |
+| `--additional-deps` | -- | string | -- | `VERVERICA_ADDITIONAL_DEPS` | No | Comma-separated JAR URIs for additional dependencies (e.g., CDC connector JARs). Included in the `sqlArtifact.additionalDependencies` API field. |
 | `--project-dir` | -- | path | Current working directory | -- | No | dbt project dir (for SQL auto-discovery). |
 
 ### Examples
@@ -374,6 +375,7 @@ dbt-flink-ververica workflow [OPTIONS]
 | `--engine-version` | -- | string | From config or `vera-4.0.0-flink-1.20` | `VERVERICA_ENGINE_VERSION` | No | Flink engine version. |
 | `--start` | -- | flag | `False` | -- | No | Auto-start all deployments after creation. |
 | `--dry-run` | -- | flag | `False` | -- | No | Compile and show SQL without deploying. |
+| `--additional-deps` | -- | string | -- | `VERVERICA_ADDITIONAL_DEPS` | No | Comma-separated JAR URIs for additional dependencies (e.g., CDC connector JARs). Merged with TOML config and per-model hint dependencies. |
 | `--config` | `-c` | path | Auto-discover `dbt-flink-ververica.toml` | -- | No | Path to TOML config file. |
 
 *Not required when using `--dry-run`.
@@ -568,6 +570,268 @@ deployment -> parallelism
 
 ---
 
+## local deploy
+
+Deploy a SQL pipeline to a local Flink cluster running in containers (podman or docker). Copies SQL files into the JobManager container, discovers connector JARs, and executes the pipeline via `sql-client.sh`. Each `INSERT INTO` statement becomes a long-running streaming Flink job.
+
+This command requires either `podman` (pip install `podman>=5.0.0`) or `docker` (pip install `docker>=7.0.0`) to be installed and connected to a running container runtime.
+
+```bash
+dbt-flink-ververica local deploy [OPTIONS]
+```
+
+### Options
+
+| Option | Short | Type | Default | Required | Description |
+|---|---|---|---|---|---|
+| `--sql-dir` | -- | path | From config | One of `--sql-dir` or `--sql-file` | Directory with ordered SQL files (e.g., `01_sources.sql`, `02_staging.sql`). Files are sorted by name, concatenated, and executed as a single pipeline. |
+| `--sql-file` | -- | path | -- | One of `--sql-dir` or `--sql-file` | Single SQL file to deploy. |
+| `--container` | -- | string | `flink-jobmanager` | No | JobManager container name. Used to find the container by name substring. |
+| `--jar` | -- | string | -- | No | Extra JAR path inside the container. Repeatable: `--jar /path/a.jar --jar /path/b.jar`. Added to the `sql-client.sh --jar` flags. |
+| `--no-auto-jars` | -- | flag | `False` | No | Disable automatic JAR detection. By default, the deployer scans for connector JARs matching `jar_patterns` inside the container. |
+| `--flink-url` | -- | string | `http://localhost:18081` | No | Flink REST API URL for job status queries after deployment. |
+| `--dry-run` | -- | flag | `False` | No | Show the SQL content and discovered JARs without executing. No changes are made to the cluster. |
+| `--config` | `-c` | path | Auto-discover `dbt-flink-ververica.toml` | No | Path to TOML config file. The `[local_flink]` section provides defaults for all local Flink options. |
+
+### Examples
+
+Deploy ordered SQL files with automatic JAR detection:
+
+```bash
+dbt-flink-ververica local deploy \
+  --sql-dir ./scripts/test-kit/sql/flink/
+```
+
+Dry run to preview SQL and JARs:
+
+```bash
+dbt-flink-ververica local deploy \
+  --sql-dir ./scripts/test-kit/sql/flink/ \
+  --dry-run
+```
+
+Deploy with explicit JARs and custom container name:
+
+```bash
+dbt-flink-ververica local deploy \
+  --sql-file ./pipeline.sql \
+  --container my-flink-jobmanager \
+  --jar /opt/flink/lib/flink-sql-connector-kafka-3.3.0-1.20.jar \
+  --jar /opt/flink/lib/postgresql-42.7.4.jar \
+  --no-auto-jars
+```
+
+Deploy using TOML config for defaults:
+
+```bash
+dbt-flink-ververica local deploy \
+  --sql-dir ./sql/ \
+  --config ./config/local-dev.toml
+```
+
+### Output
+
+```
+Step 1: Checking services
+  v jobmanager
+  v sql-gateway
+  v kafka
+  v postgres
+
+Step 2: Discovering JARs
+  v /opt/flink/lib/flink-sql-connector-postgres-cdc-3.0.0.jar
+  v /opt/flink/lib/flink-sql-connector-kafka-3.3.0-1.20.jar
+  v /opt/flink/lib/flink-connector-jdbc-3.3.0-1.20.jar
+  v /opt/flink/lib/postgresql-42.7.4.jar
+  Total: 4 JARs
+
+Step 3: Deploying pipeline
+  v Pipeline SQL executed successfully
+
+Step 4: Verifying Flink jobs
+┌──────────────┬─────────┬─────────────────────────────────────────┬──────────┐
+│ Job ID       │ State   │ Name                                    │ Duration │
+├──────────────┼─────────┼─────────────────────────────────────────┼──────────┤
+│ a1b2c3d4e5f6 │ RUNNING │ insert-into_default.enriched_orders      │ 3s       │
+│ f6e5d4c3b2a1 │ RUNNING │ insert-into_default.user_activity        │ 3s       │
+└──────────────┴─────────┴─────────────────────────────────────────┴──────────┘
+
+  v 6 streaming jobs running
+```
+
+### Deployment Flow
+
+1. **Check services** -- Verifies all containers in `[local_flink.services]` are running and healthy.
+2. **Discover JARs** -- Scans the JobManager container for connector JARs matching `jar_patterns`.
+3. **Copy SQL** -- Copies SQL files into the container at `remote_sql_dir` and concatenates them.
+4. **Execute** -- Runs `sql-client.sh embedded --jar ... -f pipeline.sql` inside the container.
+5. **Verify** -- Waits 3 seconds, then queries the Flink REST API for running jobs.
+
+---
+
+## local status
+
+Show the status of all Flink jobs in the cluster by querying the Flink REST API.
+
+```bash
+dbt-flink-ververica local status [OPTIONS]
+```
+
+### Options
+
+| Option | Short | Type | Default | Required | Description |
+|---|---|---|---|---|---|
+| `--flink-url` | -- | string | `http://localhost:18081` | No | Flink REST API URL. |
+| `--config` | `-c` | path | Auto-discover | No | Path to TOML config file. |
+
+### Examples
+
+```bash
+dbt-flink-ververica local status
+```
+
+```bash
+dbt-flink-ververica local status --flink-url http://flink-cluster:8081
+```
+
+### Output
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                   Flink Jobs (http://localhost:18081)                        │
+├──────────────┬─────────┬─────────────────────────────────────────┬──────────┤
+│ Job ID       │ State   │ Name                                    │ Duration │
+├──────────────┼─────────┼─────────────────────────────────────────┼──────────┤
+│ a1b2c3d4e5f6 │ RUNNING │ insert-into_default.enriched_orders      │ 2h 15m   │
+│ f6e5d4c3b2a1 │ RUNNING │ insert-into_default.user_activity        │ 2h 15m   │
+│ 1234567890ab │ FINISHED│ insert-into_default.daily_summary        │ 45s      │
+└──────────────┴─────────┴─────────────────────────────────────────┴──────────┘
+
+Total: 3 jobs (2 running)
+```
+
+---
+
+## local services
+
+Check health of all containers required by the Flink pipeline. Detects the container runtime (podman or docker) and queries each container's status and healthcheck.
+
+```bash
+dbt-flink-ververica local services [OPTIONS]
+```
+
+### Options
+
+| Option | Short | Type | Default | Required | Description |
+|---|---|---|---|---|---|
+| `--container` | -- | string | From config | No | Override JobManager container name. |
+| `--config` | `-c` | path | Auto-discover | No | Path to TOML config file. |
+
+### Examples
+
+```bash
+dbt-flink-ververica local services
+```
+
+### Output
+
+```
+Container runtime: podman v5.3.1
+
+┌──────────────────────────────────────────────┐
+│              Service Health                  │
+├─────────────┬────────────────────┬───────────┤
+│ Service     │ Container          │ Status    │
+├─────────────┼────────────────────┼───────────┤
+│ jobmanager  │ flink-jobmanager   │ healthy   │
+│ sql-gateway │ flink-sql-gateway  │ healthy   │
+│ kafka       │ tk-kafka           │ healthy   │
+│ postgres    │ tk-postgres        │ healthy   │
+└─────────────┴────────────────────┴───────────┘
+
+  v All 4 services healthy
+```
+
+---
+
+## local cancel
+
+Cancel a running Flink job by its job ID. Sends a `PATCH /jobs/:jobid?mode=cancel` request to the Flink REST API.
+
+```bash
+dbt-flink-ververica local cancel <JOB_ID> [OPTIONS]
+```
+
+### Arguments
+
+| Argument | Type | Required | Description |
+|---|---|---|---|
+| `JOB_ID` | string | Yes | Flink job ID to cancel. A 32-character hex string (e.g., `a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4`) or a unique prefix. |
+
+### Options
+
+| Option | Short | Type | Default | Required | Description |
+|---|---|---|---|---|---|
+| `--flink-url` | -- | string | `http://localhost:18081` | No | Flink REST API URL. |
+| `--config` | `-c` | path | Auto-discover | No | Path to TOML config file. |
+
+### Examples
+
+Cancel a job by full ID:
+
+```bash
+dbt-flink-ververica local cancel a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4
+```
+
+Cancel with a custom Flink REST URL:
+
+```bash
+dbt-flink-ververica local cancel a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4 \
+  --flink-url http://flink-cluster:8081
+```
+
+Cancel using TOML config for the REST URL:
+
+```bash
+dbt-flink-ververica local cancel a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4 \
+  --config ./config/local-dev.toml
+```
+
+### Output
+
+Success:
+
+```
+Cancelling job a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4 ...
+  v Job a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4 cancel request accepted
+```
+
+Job not found:
+
+```
+Cancelling job a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4 ...
+  x Failed to cancel job a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4: Job a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4 not found (HTTP 404)
+```
+
+Job not cancellable (already finished or cancelled):
+
+```
+Cancelling job a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4 ...
+  x Failed to cancel job a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4: Job a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4 is not in a cancellable state (HTTP 409)
+```
+
+### How It Works
+
+The command sends a `PATCH` request to the Flink REST API:
+
+```
+PATCH /jobs/{job_id}?mode=cancel
+```
+
+The request timeout is controlled by the `rest_api_timeout_seconds` config field (default: 10 seconds). See [TOML Configuration](toml-config.md#local_flink) for details.
+
+---
+
 ## Common Workflows
 
 ### First-Time Setup
@@ -639,9 +903,34 @@ dbt-flink-ververica workflow \
   --start
 ```
 
+### Local Flink Development
+
+```bash
+# 1. Start local Flink cluster
+cd scripts/test-kit && ./setup.sh && ./initialize.sh
+
+# 2. Check all services are healthy
+dbt-flink-ververica local services
+
+# 3. Preview pipeline without deploying
+dbt-flink-ververica local deploy \
+  --sql-dir ./scripts/test-kit/sql/flink/ \
+  --dry-run
+
+# 4. Deploy pipeline
+dbt-flink-ververica local deploy \
+  --sql-dir ./scripts/test-kit/sql/flink/
+
+# 5. Monitor running jobs
+dbt-flink-ververica local status
+
+# 6. Cancel a specific job
+dbt-flink-ververica local cancel <job-id>
+```
+
 ## See Also
 
-- [TOML Configuration](toml-config.md) -- Full TOML configuration file schema
+- [TOML Configuration](toml-config.md) -- Full TOML configuration file schema, including `[local_flink]`
 - [SQL Transformation](sql-transformation.md) -- How query hints are processed
 - [Adapter Configuration](adapter-config.md) -- dbt profiles.yml and model config
 - [Troubleshooting](../troubleshooting.md) -- Common issues and solutions

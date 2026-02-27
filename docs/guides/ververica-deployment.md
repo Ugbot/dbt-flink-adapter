@@ -1,10 +1,15 @@
-# Ververica Deployment
+# Flink Deployment
 
-[Home](../index.md) > [Guides](./) > Ververica Deployment
+[Home](../index.md) > [Guides](./) > Flink Deployment
 
 ---
 
-The `dbt-flink-ververica` CLI compiles dbt models into Flink SQL and deploys them to Ververica Cloud as managed SQLSCRIPT jobs. This guide covers authentication, configuration, the SQL transformation pipeline, deployment options, and programmatic deployment patterns.
+The `dbt-flink-ververica` CLI supports two deployment targets:
+
+1. **Ververica Cloud** -- Managed SQLSCRIPT deployments with authentication, scaling, and lifecycle management
+2. **Local Flink** -- Deploy to local Flink clusters via `sql-client.sh` in containers (podman/docker)
+
+This guide covers both deployment paths.
 
 ## Deployment Lifecycle
 
@@ -612,6 +617,149 @@ wrap_in_statement_set = true
 ```
 
 This wraps the combined SQL in a `BEGIN STATEMENT SET; ... END;` block.
+
+---
+
+## Local Flink Deployment
+
+For deploying to local Flink clusters running in containers. The CLI copies SQL files into the JobManager container and executes them via `sql-client.sh`. This approach is necessary because the Flink SQL Gateway REST API cannot dynamically load connector JARs -- the SQL CLI is the correct path for local Flink deployments that require custom connectors (CDC, Kafka, JDBC).
+
+### Prerequisites
+
+- A running Flink cluster in containers (podman or docker)
+- `pip install dbt-flink-ververica[local]` (for podman) or `pip install dbt-flink-ververica[docker]`
+- SQL files for your pipeline
+
+### Quick Start
+
+```bash
+# 1. Check services are healthy
+dbt-flink-ververica localservices
+
+# 2. Preview what will be deployed
+dbt-flink-ververica localdeploy \
+  --sql-dir ./scripts/test-kit/sql/flink/ \
+  --dry-run
+
+# 3. Deploy the pipeline
+dbt-flink-ververica localdeploy \
+  --sql-dir ./scripts/test-kit/sql/flink/
+
+# 4. Check job status
+dbt-flink-ververica localstatus
+
+# 5. Cancel a specific job
+dbt-flink-ververica localcancel <job-id>
+```
+
+### How It Works
+
+```mermaid
+sequenceDiagram
+    participant CLI as dbt-flink-ververica
+    participant Runtime as podman/docker
+    participant JM as JobManager Container
+    participant Flink as Flink Cluster
+    participant REST as Flink REST API
+
+    CLI->>Runtime: Detect runtime (podman first)
+    CLI->>Runtime: Check service health
+    Runtime-->>CLI: All containers healthy
+
+    CLI->>JM: ls /opt/flink/lib/*.jar (discover JARs)
+    JM-->>CLI: List of connector JARs
+
+    CLI->>JM: mkdir -p /tmp/pipeline-sql
+    CLI->>JM: copy SQL files (put_archive)
+    CLI->>JM: cat *.sql > pipeline.sql
+    CLI->>JM: sql-client.sh embedded --jar ... -f pipeline.sql
+
+    JM->>Flink: Submit streaming jobs
+    Flink-->>JM: Jobs submitted
+
+    CLI->>REST: GET /jobs/overview
+    REST-->>CLI: Job status (RUNNING, etc.)
+```
+
+### SQL File Ordering
+
+SQL files in the `--sql-dir` directory are sorted by filename and concatenated in order. Use numeric prefixes to control execution order:
+
+```
+sql/flink/
+├── 01_sources.sql      # CDC source tables (Postgres -> Kafka)
+├── 02_staging.sql       # Kafka source + staging transforms
+└── 03_marts.sql         # Analytics mart tables (Kafka -> PG)
+```
+
+Each `INSERT INTO` statement becomes a separate long-running streaming Flink job.
+
+### JAR Discovery
+
+By default, the deployer scans the JobManager container for connector JARs matching configured patterns:
+
+```toml
+[local_flink]
+jar_patterns = [
+    "/opt/flink/lib/flink-sql-connector-*.jar",
+    "/opt/flink/lib/flink-connector-*.jar",
+    "/opt/flink/lib/postgresql-*.jar",
+]
+```
+
+Discovered JARs are passed as `--jar` flags to `sql-client.sh`. You can also specify additional JARs with `--jar` CLI flags or disable auto-detection with `--no-auto-jars`.
+
+### TOML Configuration
+
+All local Flink options can be set in `dbt-flink-ververica.toml`:
+
+```toml
+[local_flink]
+jobmanager_container = "flink-jobmanager"
+flink_rest_url = "http://localhost:18081"
+sql_dir = "./sql/flink"
+job_verification_delay_seconds = 3.0
+rest_api_timeout_seconds = 10.0
+
+[local_flink.services]
+jobmanager = "flink-jobmanager"
+kafka = "tk-kafka"
+postgres = "tk-postgres"
+```
+
+CLI flags override TOML values. See [TOML Configuration Reference](../reference/toml-config.md#local_flink) for the full schema.
+
+### Cancelling Jobs
+
+Use `local cancel` to stop a running Flink job by its ID:
+
+```bash
+# Get the job ID from local status output
+dbt-flink-ververica localstatus
+
+# Cancel the job
+dbt-flink-ververica localcancel a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4
+```
+
+The command sends a `PATCH /jobs/{job_id}?mode=cancel` request to the Flink REST API. The request timeout is controlled by `rest_api_timeout_seconds` (default: 10s).
+
+Common failure modes:
+- **HTTP 404**: Job ID not found -- verify the ID with `local status`
+- **HTTP 409**: Job is not in a cancellable state (already finished or cancelled)
+- **Connection error**: Flink REST API is unreachable -- check `flink_rest_url` in your config
+
+See [CLI Reference](../reference/cli-reference.md#local-cancel) for the full command signature.
+
+### Container Runtime
+
+The deployer prefers podman and falls back to docker. Both `podman-py` and `docker-py` expose a compatible API, so the behavior is identical regardless of which runtime is used.
+
+Install the appropriate dependency:
+
+```bash
+pip install dbt-flink-ververica[local]     # podman
+pip install dbt-flink-ververica[docker]  # docker
+```
 
 ---
 

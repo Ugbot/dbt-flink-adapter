@@ -7,7 +7,7 @@
         materialized='streaming_table',
         catalog_managed=true,
         execution_mode='streaming',
-        schema='''
+        columns='''
             event_id BIGINT,
             user_id BIGINT,
             event_type STRING,

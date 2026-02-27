@@ -1,0 +1,24 @@
+name: 'cdc_pipeline_example'
+version: '1.0.0'
+config-version: 2
+
+profile: 'flink'
+
+model-paths: ["models"]
+
+models:
+  cdc_pipeline_example:
+    +materialized: streaming_table
+    +default_connector_properties:
+      properties.bootstrap.servers: "kafka:29092"
+      format: json
+
+    staging:
+      +connector_properties:
+        connector: upsert-kafka
+        key.format: json
+        value.format: json
+
+    marts:
+      +connector_properties:
+        connector: blackhole

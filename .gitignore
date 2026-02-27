@@ -14,7 +14,8 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
+lib/*
+!lib/flink-gateway/
 lib64/
 parts/
 sdist/

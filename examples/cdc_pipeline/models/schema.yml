@@ -1,0 +1,87 @@
+version: 2
+
+sources:
+  - name: mysql_cdc
+    description: "MySQL CDC sources — captures row-level changes from MySQL binlog"
+    tables:
+      - name: customers
+        description: "Customer master data captured via MySQL CDC"
+        config:
+          type: streaming
+          primary_key: [customer_id]
+          connector_properties:
+            connector: mysql-cdc
+            hostname: mysql
+            port: '3306'
+            username: flink
+            password: flink
+            database-name: flink_test
+            table-name: customers
+            server-id: '5401-5404'
+        columns:
+          - name: customer_id
+            data_type: INT
+            description: "Unique customer identifier"
+          - name: customer_name
+            data_type: STRING
+            description: "Customer full name"
+          - name: email
+            data_type: STRING
+            description: "Customer email address"
+          - name: phone
+            data_type: STRING
+            description: "Customer phone number"
+          - name: city
+            data_type: STRING
+            description: "Customer city"
+          - name: country
+            data_type: STRING
+            description: "Customer country"
+          - name: status
+            data_type: STRING
+            description: "Account status (active/inactive)"
+          - name: updated_at
+            data_type: TIMESTAMP(3)
+            description: "Last update timestamp"
+
+  - name: postgres_cdc
+    description: "PostgreSQL CDC sources — captures row-level changes from WAL"
+    tables:
+      - name: orders
+        description: "Order data captured via PostgreSQL CDC"
+        config:
+          type: streaming
+          primary_key: [order_id]
+          connector_properties:
+            connector: postgres-cdc
+            hostname: postgres
+            port: '5432'
+            username: postgres
+            password: postgres
+            database-name: testdb
+            schema-name: flink_test
+            table-name: orders
+            slot.name: flink_orders_slot
+            decoding.plugin.name: pgoutput
+        columns:
+          - name: order_id
+            data_type: INT
+            description: "Unique order identifier"
+          - name: user_id
+            data_type: INT
+            description: "Customer who placed the order"
+          - name: product_name
+            data_type: STRING
+            description: "Product purchased"
+          - name: quantity
+            data_type: INT
+            description: "Quantity ordered"
+          - name: price
+            data_type: "DECIMAL(10, 2)"
+            description: "Unit price"
+          - name: order_date
+            data_type: TIMESTAMP(3)
+            description: "When the order was placed"
+          - name: status
+            data_type: STRING
+            description: "Order status (pending/completed/shipped)"

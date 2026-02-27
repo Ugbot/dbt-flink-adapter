@@ -217,7 +217,9 @@ sequenceDiagram
 
 **Mode 2: Without Explicit Schema (CTAS fallback)**
 
-Without a `schema` config, the adapter uses `CREATE TABLE ... AS SELECT`, which does not support watermarks.
+Without a `columns` config, the adapter uses `CREATE TABLE ... AS SELECT`, which does not support watermarks.
+
+> **Note:** Use `columns=` (not `schema=`) for inline column definitions. dbt-core reserves `schema=` for the model's custom schema name.
 
 ### Configuration with Watermarks
 
@@ -227,7 +229,7 @@ Without a `schema` config, the adapter uses `CREATE TABLE ... AS SELECT`, which 
   config(
     materialized='streaming_table',
     execution_mode='streaming',
-    schema="
+    columns="
       event_id BIGINT,
       user_id STRING,
       event_type STRING,

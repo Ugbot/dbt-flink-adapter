@@ -8,6 +8,12 @@ from tests.functional.adapter.fixtures import (
 )
 
 
+@pytest.mark.integration
+@pytest.mark.skip(
+    reason="Requires Kafka broker at kafka:29092. "
+    "Source tables are created correctly but model queries need live Kafka. "
+    "Run with CDC test infrastructure (scripts/test-kit/docker-compose.yml)."
+)
 class TestSourceTablesGeneration:
     """
     Methods in this class will be of two types:

@@ -55,6 +55,26 @@ strip_hints = true
 generate_set_statements = true
 wrap_in_statement_set = false
 include_drop_statements = true
+
+# Optional: Local Flink cluster settings (used by `local deploy`, `local status`, `local cancel`)
+[local_flink]
+jobmanager_container = "flink-jobmanager"
+flink_rest_url = "http://localhost:18081"
+sql_dir = "./sql/flink"
+remote_sql_dir = "/tmp/pipeline-sql"
+job_verification_delay_seconds = 3.0
+rest_api_timeout_seconds = 10.0
+jar_patterns = [
+    "/opt/flink/lib/flink-sql-connector-*.jar",
+    "/opt/flink/lib/flink-connector-*.jar",
+    "/opt/flink/lib/postgresql-*.jar",
+]
+
+[local_flink.services]
+jobmanager = "flink-jobmanager"
+sql-gateway = "flink-sql-gateway"
+kafka = "tk-kafka"
+postgres = "tk-postgres"
 ```
 
 ---
@@ -201,6 +221,76 @@ include_drop_statements = true
 ```
 
 See [SQL Transformation Reference](sql-transformation.md) for details on how each setting affects the output.
+
+---
+
+## [local_flink]
+
+Configuration for deploying to local Flink clusters via the `local deploy` command. This section is optional -- if omitted, `local` commands use sensible defaults for local development.
+
+| Key | Type | Default | Required | Description |
+|---|---|---|---|---|
+| `jobmanager_container` | string | `flink-jobmanager` | No | Container name (or substring) for the Flink JobManager. Used to find the container and execute `sql-client.sh` inside it. |
+| `flink_rest_url` | string | `http://localhost:18081` | No | Flink REST API URL for querying job status. Trailing slashes are stripped automatically. |
+| `sql_dir` | path | `None` | No | Default directory containing ordered SQL scripts. Resolved to an absolute path. Can be overridden with `--sql-dir` CLI flag. |
+| `jar_patterns` | list of strings | See below | No | Glob patterns to find connector JARs inside the JobManager container. The deployer runs `ls` with each pattern and collects matching `.jar` files. |
+| `remote_sql_dir` | string | `/tmp/pipeline-sql` | No | Temporary directory inside the container where SQL files are copied before execution. |
+| `job_verification_delay_seconds` | float | `3.0` | No | Seconds to wait after deployment before querying job status. Flink needs time to schedule and start submitted jobs. Range: 0.0–30.0. |
+| `rest_api_timeout_seconds` | float | `10.0` | No | Timeout in seconds for Flink REST API requests (job status, cancel). Range: 1.0–120.0. |
+
+**Default `jar_patterns`:**
+
+```toml
+jar_patterns = [
+    "/opt/flink/lib/flink-sql-connector-*.jar",
+    "/opt/flink/lib/flink-connector-*.jar",
+    "/opt/flink/lib/postgresql-*.jar",
+]
+```
+
+**Example:**
+
+```toml
+[local_flink]
+jobmanager_container = "my-flink-jm"
+flink_rest_url = "http://flink:8081"
+sql_dir = "./pipeline/sql"
+remote_sql_dir = "/tmp/pipeline-sql"
+job_verification_delay_seconds = 5.0
+rest_api_timeout_seconds = 15.0
+jar_patterns = [
+    "/opt/flink/lib/flink-sql-connector-*.jar",
+    "/opt/flink/lib/flink-connector-*.jar",
+    "/opt/flink/lib/postgresql-*.jar",
+    "/opt/flink/lib/my-custom-connector-*.jar",
+]
+```
+
+---
+
+## [local_flink.services]
+
+Maps service labels to container names for health checks. The `local services` and `local deploy` commands use this mapping to verify that all required containers are running and healthy before deployment.
+
+Keys are human-readable labels (displayed in the health check table), and values are container name substrings used to find the container.
+
+```toml
+[local_flink.services]
+jobmanager = "flink-jobmanager"
+sql-gateway = "flink-sql-gateway"
+kafka = "tk-kafka"
+postgres = "tk-postgres"
+```
+
+You can customize this for your environment:
+
+```toml
+[local_flink.services]
+flink = "my-flink-jm"
+kafka = "my-kafka-broker"
+database = "my-postgres"
+redis = "my-redis-cache"
+```
 
 ---
 

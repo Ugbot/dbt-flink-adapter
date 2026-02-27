@@ -8,7 +8,7 @@
         catalog_managed=true,
         execution_mode='streaming',
         partition_by=['dt'],
-        schema='''
+        columns='''
             dt STRING,
             metric_name STRING,
             value DOUBLE,

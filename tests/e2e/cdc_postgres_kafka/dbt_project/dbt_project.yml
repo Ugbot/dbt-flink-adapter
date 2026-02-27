@@ -1,0 +1,36 @@
+name: 'e2e_cdc_postgres_kafka'
+version: '1.0.0'
+config-version: 2
+
+profile: 'flink'
+
+model-paths: ["models"]
+
+# Create CDC source tables in the same session as model execution.
+# This is critical because TEMPORARY tables are session-scoped — a separate
+# `dbt run-operation create_sources` would create a new session whose
+# TEMPORARY tables vanish before `dbt run` can reference them.
+on-run-start:
+  - "{{ create_sources() }}"
+
+models:
+  e2e_cdc_postgres_kafka:
+    +materialized: streaming_table
+    +default_connector_properties:
+      properties.bootstrap.servers: "kafka:29092"
+      format: json
+
+    staging:
+      +connector_properties:
+        connector: upsert-kafka
+        key.format: json
+        value.format: json
+
+    marts:
+      +connector_properties:
+        connector: jdbc
+        url: "jdbc:postgresql://postgres:5432/testdb"
+        username: postgres
+        password: postgres
+        sink.buffer-flush.max-rows: '100'
+        sink.buffer-flush.interval: '1s'

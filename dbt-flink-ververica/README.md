@@ -1,14 +1,15 @@
 # dbt-flink-ververica
 
-CLI tool for deploying dbt-flink projects to Ververica Cloud.
+CLI tool for deploying dbt-flink projects to Ververica Cloud and local Flink clusters.
 
 ## Overview
 
-`dbt-flink-ververica` is a command-line tool that bridges dbt-flink-adapter and Ververica Cloud, enabling you to:
+`dbt-flink-ververica` is a command-line tool that bridges dbt-flink-adapter and Flink deployment targets, enabling you to:
 
 - **Compile** dbt models to Flink SQL
-- **Transform** dbt-flink query hints to Ververica-compatible SQL
-- **Deploy** SQL jobs to Ververica Cloud as SQLSCRIPT deployments
+- **Transform** dbt-flink query hints to deployment-compatible SQL
+- **Deploy to Ververica Cloud** as SQLSCRIPT deployments
+- **Deploy to local Flink** clusters via sql-client.sh in containers (podman/docker)
 - **Manage** authentication credentials securely in your system keyring
 
 ## Installation
@@ -18,6 +19,18 @@ CLI tool for deploying dbt-flink projects to Ververica Cloud.
 ```bash
 cd dbt-flink-ververica
 pip install -e .
+```
+
+### With local Flink support (podman)
+
+```bash
+pip install -e ".[local]"
+```
+
+### With local Flink support (docker)
+
+```bash
+pip install -e ".[docker]"
 ```
 
 ### With JAR packaging support (Phase 2, future)
@@ -214,6 +227,60 @@ strip_hints = true
 generate_set_statements = true
 wrap_in_statement_set = false
 include_drop_statements = true
+
+# Optional: Local Flink cluster settings (for `local deploy`)
+[local_flink]
+jobmanager_container = "flink-jobmanager"
+flink_rest_url = "http://localhost:18081"
+remote_sql_dir = "/tmp/pipeline-sql"
+jar_patterns = [
+    "/opt/flink/lib/flink-sql-connector-*.jar",
+    "/opt/flink/lib/flink-connector-*.jar",
+    "/opt/flink/lib/postgresql-*.jar",
+]
+
+[local_flink.services]
+jobmanager = "flink-jobmanager"
+sql-gateway = "flink-sql-gateway"
+kafka = "tk-kafka"
+postgres = "tk-postgres"
+```
+
+### Local Flink Deployment
+
+For deploying to local Flink clusters running in containers (podman or docker).
+
+#### `local deploy`
+Deploy SQL pipeline to a local Flink cluster via sql-client.sh.
+
+```bash
+dbt-flink-ververica local deploy \
+  --sql-dir ./scripts/test-kit/sql/flink/ \
+  --container flink-jobmanager
+```
+
+Options:
+- `--sql-dir`: Directory with ordered SQL files (01_sources.sql, 02_staging.sql, etc.)
+- `--sql-file`: Single SQL file to deploy
+- `--container`: JobManager container name (default: flink-jobmanager)
+- `--jar`: Extra JAR path inside the container (repeatable)
+- `--no-auto-jars`: Disable automatic JAR detection
+- `--flink-url`: Flink REST API URL (default: http://localhost:18081)
+- `--dry-run`: Show SQL and JARs without executing
+- `--config, -c`: Path to TOML config file
+
+#### `local status`
+Show status of running Flink jobs.
+
+```bash
+dbt-flink-ververica local status --flink-url http://localhost:18081
+```
+
+#### `local services`
+Check health of containers required by the pipeline.
+
+```bash
+dbt-flink-ververica local services
 ```
 
 ## How It Works
@@ -295,12 +362,12 @@ dbt-flink-ververica/
 │   ├── main.py              # CLI entry point (Typer)
 │   ├── config.py            # Configuration models (Pydantic)
 │   ├── auth.py              # Authentication & credential management
-│   ├── sql_processor.py     # SQL extraction & transformation (Week 2)
-│   ├── client.py            # Ververica API client (Week 2)
-│   ├── commands/            # CLI command implementations (Week 3)
+│   ├── sql_processor.py     # SQL extraction & transformation
+│   ├── client.py            # Ververica Cloud API client
+│   ├── local_deployer.py    # Local Flink deployment via container exec
+│   ├── commands/            # CLI command implementations
 │   └── utils/               # Utility functions
 ├── tests/                   # Test suite
-├── docs/                    # Documentation
 └── pyproject.toml           # Project configuration
 ```
 
@@ -309,7 +376,8 @@ dbt-flink-ververica/
 - Python 3.10+
 - dbt-core 1.8+
 - dbt-flink-adapter (from this repository)
-- Ververica Cloud account
+- **For Ververica Cloud**: Ververica Cloud account
+- **For local Flink**: podman (preferred) or docker with a running Flink cluster
 
 ## Security
 

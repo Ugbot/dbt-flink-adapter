@@ -73,7 +73,7 @@ Event-time watermarks use a column in the data (typically a `TIMESTAMP(3)`) as t
   config(
     materialized='streaming_table',
     execution_mode='streaming',
-    schema="
+    columns="
       event_id BIGINT,
       user_id STRING,
       event_type STRING,
@@ -114,13 +114,13 @@ CREATE TABLE target (
 
 **Using the watermark macro:**
 
-If you prefer the macro syntax inside a `schema` string:
+If you prefer the macro syntax inside a `columns` string:
 
 ```yaml
 {{
   config(
     materialized='streaming_table',
-    schema="
+    columns="
       event_id BIGINT,
       user_id STRING,
       event_time TIMESTAMP(3),
@@ -155,7 +155,7 @@ Processing-time uses the wall-clock time of the Flink operator. It requires a co
 {{
   config(
     materialized='streaming_table',
-    schema="
+    columns="
       event_id BIGINT,
       user_id STRING,
       proc_time AS PROCTIME()
@@ -457,7 +457,7 @@ sources:
   config(
     materialized='streaming_table',
     execution_mode='streaming',
-    schema="
+    columns="
       window_start TIMESTAMP(3),
       window_end TIMESTAMP(3),
       user_id STRING,

@@ -251,12 +251,13 @@ Naturally bounded. For large tables, add parallel scan configuration:
 
 ### CDC Connectors (Streaming)
 
-Change Data Capture connectors stream database changes (INSERT, UPDATE, DELETE) as a changelog.
+Change Data Capture connectors stream database changes (INSERT, UPDATE, DELETE) as a changelog. CDC sources **require** the `primary_key` config, which generates `PRIMARY KEY (...) NOT ENFORCED` in the DDL.
 
-**PostgreSQL CDC** (using Debezium):
+**PostgreSQL CDC:**
 
 ```yaml
 config:
+  primary_key: [order_id]
   connector_properties:
     connector: postgres-cdc
     hostname: db.example.com
@@ -270,15 +271,11 @@ config:
     decoding.plugin.name: pgoutput
 ```
 
-**Requirements for PostgreSQL CDC:**
-- `wal_level = logical` in `postgresql.conf`
-- A replication slot created for the Flink consumer
-- Sufficient `max_replication_slots` and `max_wal_senders`
-
-**MySQL CDC** (using Debezium):
+**MySQL CDC:**
 
 ```yaml
 config:
+  primary_key: [customer_id]
   connector_properties:
     connector: mysql-cdc
     hostname: mysql.example.com
@@ -290,10 +287,14 @@ config:
     server-id: '5401-5410'
 ```
 
-**Requirements for MySQL CDC:**
-- `binlog_format = ROW` in MySQL configuration
-- `binlog_row_image = FULL`
-- The Flink user needs `SELECT`, `REPLICATION SLAVE`, and `REPLICATION CLIENT` privileges
+The adapter validates CDC sources at compile time:
+- `primary_key` is required for all `*-cdc` connectors
+- Required connector properties (hostname, port, username, password, database-name, table-name) must be present
+- Warnings for missing recommended properties (server-id for MySQL, slot.name for PostgreSQL)
+
+CDC connector JARs are not bundled with Flink. For Ververica Cloud, use `--additional-deps` or the `additional_dependencies` TOML config to specify JAR URIs.
+
+For the full CDC guide including database setup, deployment, and troubleshooting, see [CDC Sources](./cdc-sources.md).
 
 ### Connector Summary
 

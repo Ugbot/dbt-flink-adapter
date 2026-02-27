@@ -66,13 +66,13 @@ setup(
     author="GetInData",
     author_email="office@getindata.com",
     url="https://github.com/getindata/dbt-flink-adapter",
-    packages=find_namespace_packages(include=["dbt", "dbt.*", "flink", "flink.*"]),
+    packages=find_namespace_packages(include=["dbt", "dbt.*"]),
     include_package_data=True,
     install_requires=[
         "dbt-adapters>=1.0.0,<2.0.0",
         "dbt-common>=1.0.0,<2.0.0",
         "dbt-core>=1.8.0",
-        "requests<3.0.0",
+        "flink-gateway>=0.1.0",
     ],
     extras_require={
         "ververica-tests": [
@@ -80,6 +80,13 @@ setup(
             "pydantic-settings>=2.1.0",
             "pytest-asyncio>=0.21.0",
             "httpx>=0.27.0",
+        ],
+        "e2e-tests": [
+            "podman>=5.0.0",
+            "docker>=7.0.0",
+            "psycopg2-binary>=2.9",
+            "aiokafka>=0.10.0",
+            "requests>=2.28",
         ],
     },
     zip_safe=False,

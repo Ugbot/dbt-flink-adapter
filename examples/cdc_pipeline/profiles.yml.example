@@ -1,0 +1,9 @@
+# Copy this file to ~/.dbt/profiles.yml and adjust for your environment.
+flink:
+  target: dev
+  outputs:
+    dev:
+      type: flink
+      host: localhost
+      port: 8083
+      session_name: cdc_pipeline_dev

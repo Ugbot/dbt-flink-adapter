@@ -17,8 +17,12 @@ from dbt_common.contracts.constraints import (
     ModelLevelConstraint,
 )
 
+from dbt.adapters.events.logging import AdapterLogger
+
 from dbt.adapters.flink import FlinkConnectionManager
 from dbt.adapters.flink.relation import FlinkRelation
+
+logger = AdapterLogger("Flink")
 
 
 class FlinkAdapter(BaseAdapter):
@@ -209,6 +213,7 @@ class FlinkAdapter(BaseAdapter):
         self.add_query(sql, auto_begin=False)
 
     def expand_column_types(self, goal: BaseRelation, current: BaseRelation) -> None:
+        # Flink SQL does not support ALTER COLUMN to widen types
         pass
 
     def get_columns_in_relation(self, relation: BaseRelation) -> List[BaseColumn]:
@@ -265,7 +270,7 @@ class FlinkAdapter(BaseAdapter):
         except Exception as e:
             # If DESCRIBE fails (table doesn't exist), return empty list
             # This is expected behavior for dbt when checking if relation exists
-            self.connections.logger.debug(
+            logger.debug(
                 f"Could not get columns for relation {relation}: {e}"
             )
             return []
@@ -389,8 +394,64 @@ class FlinkAdapter(BaseAdapter):
 
         except Exception as e:
             # If SHOW DATABASES fails, return empty list
-            self.connections.logger.debug(
+            logger.debug(
                 f"Could not list schemas for catalog {database}: {e}"
+            )
+            return []
+
+    @available
+    def build_catalog_table(self, catalog_rows: List[Dict[str, Any]]) -> agate.Table:
+        """
+        Convert catalog row dicts to an agate Table for dbt docs generate.
+
+        dbt-core expects get_catalog macro to return an agate Table, not a raw list.
+
+        Args:
+            catalog_rows: List of dicts with catalog metadata
+
+        Returns:
+            agate.Table with catalog columns matching dbt-core expectations
+        """
+        column_names = [
+            'table_database', 'table_schema', 'table_name', 'table_type',
+            'table_owner', 'table_comment', 'column_name', 'column_index',
+            'column_type', 'column_comment',
+        ]
+        column_types = [
+            agate.Text(), agate.Text(), agate.Text(), agate.Text(),
+            agate.Text(), agate.Text(), agate.Text(), agate.Number(),
+            agate.Text(), agate.Text(),
+        ]
+        rows = [
+            [row.get(col) for col in column_names]
+            for row in catalog_rows
+        ]
+        return agate.Table(rows, column_names, column_types)
+
+    @available
+    def list_views_in_schema(self, schema: str) -> List[str]:
+        """
+        List views in a Flink database, returning empty list on failure.
+
+        SHOW VIEWS FROM/IN is not supported in all Flink versions.
+        This method provides graceful fallback for catalog generation.
+
+        Args:
+            schema: Database name to list views from
+
+        Returns:
+            List of view names, or empty list if SHOW VIEWS is not supported
+        """
+        try:
+            sql = f"SHOW VIEWS IN {schema}"
+            _, cursor = self.add_query(sql, auto_begin=False)
+            results = cursor.fetchall()
+            return [str(row[0]) if hasattr(row, '__iter__') and not isinstance(row, str)
+                    else str(row) for row in results]
+        except Exception as e:
+            logger.debug(
+                f"SHOW VIEWS not supported for schema {schema}: {e}. "
+                f"Falling back to empty view list."
             )
             return []
 
@@ -465,6 +526,7 @@ class FlinkAdapter(BaseAdapter):
         return False
 
     def rename_relation(self, from_relation: BaseRelation, to_relation: BaseRelation) -> None:
+        # Flink SQL does not support RENAME TABLE
         pass
 
     def truncate_relation(self, relation: BaseRelation) -> None:
@@ -494,7 +556,7 @@ class FlinkAdapter(BaseAdapter):
         except Exception as e:
             # If DELETE fails (not supported), try DROP and recreate
             # This is a fallback that won't preserve the table structure
-            self.connections.logger.warning(
+            logger.warning(
                 f"Could not truncate relation {relation}: {e}. "
                 f"DELETE not supported for this connector."
             )

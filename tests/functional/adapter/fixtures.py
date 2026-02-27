@@ -32,8 +32,7 @@ version: 2
 models:
   - name: my_model
     config:
-      database: my_model_database
-      schema: my_model_schema
+      execution_mode: streaming
       connector_properties:
         connector: 'kafka'
         'properties.bootstrap.servers': 'kafka:29092'

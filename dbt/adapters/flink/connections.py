@@ -18,10 +18,11 @@ from dbt.adapters.sql import SQLConnectionManager  # type: ignore
 from dbt.adapters.events.logging import AdapterLogger
 
 from dbt.adapters.flink.handler import FlinkHandler, FlinkCursor
-from flink.sqlgateway.client import FlinkSqlGatewayClient
-from flink.sqlgateway.config import SqlGatewayConfig
-from flink.sqlgateway.session import SqlGatewaySession
-from flink.sqlgateway.heartbeat import HeartbeatManager
+
+from flink_gateway.rest.config import GatewayConfig
+from flink_gateway.rest.transport import Transport
+from flink_gateway.rest.session import Session
+from flink_gateway.rest.heartbeat import HeartbeatManager
 
 logger = AdapterLogger("Flink")
 
@@ -45,34 +46,65 @@ class FlinkCredentials(Credentials):
     _ALIASES = {"session": "session_name"}
 
     @property
-    def type(self):
+    def type(self) -> str:
         """Return name of adapter."""
         return "flink"
 
     @property
-    def unique_field(self):
+    def unique_field(self) -> str:
         """
         Hashed and included in anonymous telemetry to track adapter adoption.
         Pick a field that can uniquely identify one team/organization building with this adapter
         """
         return self.host
 
-    def _connection_keys(self):
+    def _connection_keys(self) -> Tuple[str, ...]:
         """
-        List of keys to display in the `dbt debug` output.
+        List of keys to display in the `dbt debug` output and used by
+        dbt-core to build the Jinja `target` context variable.
+
+        Must include 'database' and 'schema' so that `target.database`
+        and `target.schema` resolve correctly in macros like
+        `generate_schema_name` and `generate_database_name`.
         """
-        return "host", "port", "session_name"
+        return "host", "port", "database", "schema", "session_name"
 
 
 class FlinkConnectionManager(SQLConnectionManager):
     TYPE = "flink"
 
-    session: SqlGatewaySession
-    heartbeat_manager: HeartbeatManager = None
+    session: Optional[Session] = None
+    heartbeat_manager: Optional[HeartbeatManager] = None
+    _gateway_config: Optional[GatewayConfig] = None
+    _transport: Optional[Transport] = None
 
-    def __init__(self, profile, mp_context=None):
+    def __init__(self, profile: Any, mp_context: Optional[Any] = None) -> None:
         super().__init__(profile, mp_context)
         self.heartbeat_manager = HeartbeatManager()
+
+    @classmethod
+    def _get_transport(cls, credentials: "FlinkCredentials") -> Transport:
+        """
+        Get or create a Transport instance for the given credentials.
+
+        Reuses the existing transport if the config matches, otherwise
+        creates a new one.
+        """
+        config = GatewayConfig(
+            host=credentials.host,
+            port=credentials.port,
+            default_session_name=credentials.session_name,
+            heartbeat_enabled=credentials.heartbeat_enabled,
+            heartbeat_interval_s=credentials.heartbeat_interval_s,
+        )
+
+        if cls._transport is None or cls._gateway_config != config:
+            if cls._transport is not None:
+                cls._transport.close()
+            cls._gateway_config = config
+            cls._transport = Transport(config)
+
+        return cls._transport
 
     @contextmanager
     def exception_handler(self, sql: str):
@@ -98,13 +130,11 @@ class FlinkConnectionManager(SQLConnectionManager):
 
         credentials: FlinkCredentials = connection.credentials
         try:
-            session = FlinkConnectionManager._read_session_handle(credentials)
+            transport = cls._get_transport(credentials)
+
+            session = FlinkConnectionManager._read_session_handle(credentials, transport)
             if not session:
-                session = FlinkSqlGatewayClient.create_session(
-                    host=credentials.host,
-                    port=credentials.port,
-                    session_name=credentials.session_name,
-                )
+                session = cls._create_new_session(credentials, transport)
                 logger.info(f"Session created: {session.session_handle}")
                 FlinkConnectionManager._store_session_handle(session)
 
@@ -130,7 +160,30 @@ class FlinkConnectionManager(SQLConnectionManager):
         return connection
 
     @classmethod
-    def _read_session_handle(cls, credentials: FlinkCredentials) -> Optional[SqlGatewaySession]:
+    def _create_new_session(cls, credentials: "FlinkCredentials", transport: Transport) -> Session:
+        """
+        Create a new SQL Gateway session via the REST API.
+
+        Uses the Transport directly to POST to /v1/sessions and constructs
+        a Session object from the response.
+        """
+        response = transport.request(
+            "POST",
+            "/v1/sessions",
+            json={"sessionName": credentials.session_name},
+        )
+        session_handle = response["sessionHandle"]
+        return Session(
+            transport=transport,
+            session_handle=session_handle,
+            name=credentials.session_name,
+            api_version="v1",
+        )
+
+    @classmethod
+    def _read_session_handle(
+        cls, credentials: FlinkCredentials, transport: Transport
+    ) -> Optional[Session]:
         if os.path.isfile(SESSION_FILE_PATH):
             with open(SESSION_FILE_PATH, "r+") as file:
                 session_file = yaml.safe_load(file)
@@ -148,14 +201,16 @@ class FlinkConnectionManager(SQLConnectionManager):
                     f"Restored session from file. Session handle: {session_file['session_handle']}"
                 )
 
-                return SqlGatewaySession(
-                    SqlGatewayConfig(credentials.host, credentials.port, credentials.session_name),
-                    session_file["session_handle"],
+                return Session(
+                    transport=transport,
+                    session_handle=session_file["session_handle"],
+                    name=credentials.session_name,
+                    api_version="v1",
                 )
         return None
 
     @classmethod
-    def _store_session_handle(cls, session: SqlGatewaySession):
+    def _store_session_handle(cls, session: Session) -> None:
         content = {
             "timestamp": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
             "session_handle": session.session_handle,
@@ -183,7 +238,7 @@ class FlinkConnectionManager(SQLConnectionManager):
             query_id=query_id,
         )
 
-    def close(self, connection):
+    def close(self, connection: Connection) -> Connection:
         """
         Close the connection and clean up resources.
 
@@ -200,7 +255,7 @@ class FlinkConnectionManager(SQLConnectionManager):
         connection.state = ConnectionState.CLOSED
         return connection
 
-    def cancel(self, connection):
+    def cancel(self, connection: Connection) -> None:
         """
         Cancel any ongoing queries on this connection.
 
@@ -235,8 +290,8 @@ class FlinkConnectionManager(SQLConnectionManager):
 
 
     # supress adding BEGIN and COMMIT as Flink does not handle transactions
-    def add_begin_query(self):
+    def add_begin_query(self) -> None:
         pass
 
-    def add_commit_query(self):
+    def add_commit_query(self) -> None:
         pass

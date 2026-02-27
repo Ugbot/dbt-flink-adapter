@@ -1,0 +1,10 @@
+flink:
+  target: dev
+  outputs:
+    dev:
+      type: flink
+      host: localhost
+      port: 18083
+      session_name: e2e_cdc_pg_kafka
+      database: default_catalog
+      schema: default_database

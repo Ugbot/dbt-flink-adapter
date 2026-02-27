@@ -10,15 +10,11 @@ import pytest
 from dbt.tests.util import run_dbt
 
 
-# Test model SQL with explicit schema
+# Use view materialization — Flink's default in-memory catalog has no
+# connector that supports both CTAS and subsequent SELECT.
+# Views register the query without needing a connector.
 test_catalog_model_sql = """
-{{ config(
-    materialized='table',
-    properties={
-        'connector': 'datagen',
-        'rows-per-second': '1'
-    }
-) }}
+{{ config(materialized='view') }}
 
 SELECT
     CAST(1 AS BIGINT) as user_id,
@@ -27,6 +23,7 @@ SELECT
 """
 
 
+@pytest.mark.integration
 class TestCatalogIntrospection:
     """Test catalog introspection methods implemented in v1.8.0."""
 
@@ -50,8 +47,9 @@ class TestCatalogIntrospection:
             identifier="test_catalog_model"
         )
 
-        # Test get_columns_in_relation
-        columns = adapter.get_columns_in_relation(relation)
+        # Acquire a connection for direct adapter calls (run_dbt closes its connections)
+        with adapter.connection_named("test_get_columns"):
+            columns = adapter.get_columns_in_relation(relation)
 
         # Validate results
         assert len(columns) > 0, "get_columns_in_relation should return columns"
@@ -71,15 +69,13 @@ class TestCatalogIntrospection:
         """Test that list_schemas() returns available databases."""
         adapter = project.adapter
 
-        # Test list_schemas
-        schemas = adapter.list_schemas(database=project.database)
+        # Acquire a connection for direct adapter calls
+        with adapter.connection_named("test_list_schemas"):
+            schemas = adapter.list_schemas(database=project.database)
 
         # Validate results
         assert isinstance(schemas, list), "list_schemas should return a list"
         assert len(schemas) >= 0, "list_schemas should execute without error"
-
-        # The default_database should exist in most Flink setups
-        # Note: This assertion may need adjustment based on Flink configuration
 
     def test_docs_generate(self, project):
         """Test that dbt docs generate works with catalog introspection."""
@@ -94,20 +90,17 @@ class TestCatalogIntrospection:
         assert results is not None or results is None  # Just checking it doesn't raise
 
 
+@pytest.mark.integration
 class TestCatalogMacro:
     """Test the get_catalog macro for documentation generation."""
 
     @pytest.fixture(scope="class")
     def models(self):
         return {
+            # Use views for both — blackhole tables can't be referenced in
+            # SELECT (sink-only connector), so views are needed.
             "test_table.sql": """
-                {{ config(
-                    materialized='table',
-                    properties={
-                        'connector': 'datagen',
-                        'rows-per-second': '1'
-                    }
-                ) }}
+                {{ config(materialized='view') }}
                 SELECT
                     CAST(1 AS BIGINT) as id,
                     CAST('value' AS STRING) as name
@@ -131,6 +124,7 @@ class TestCatalogMacro:
         # We're testing that the process completes without errors
 
 
+@pytest.mark.integration
 class TestSchemaManagement:
     """Test schema (database) creation and management."""
 
@@ -184,13 +178,13 @@ class TestSchemaManagement:
             pytest.skip(f"DROP DATABASE not supported in this Flink setup: {e}")
 
 
-@pytest.mark.skip(reason="Integration test - requires running Flink cluster")
+@pytest.mark.integration
 class TestCatalogIntegration:
     """
     Integration tests for catalog functionality.
 
     These tests require a running Flink cluster with SQL Gateway.
-    Run with: pytest tests/functional/adapter/test_catalog.py --runintegration
+    Run with: uv run pytest -m integration
     """
 
     @pytest.fixture(scope="class")

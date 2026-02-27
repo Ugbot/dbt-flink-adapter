@@ -4,7 +4,7 @@
     config(
         materialized='streaming_table',
         execution_mode='streaming',
-        schema='''
+        columns='''
             event_id BIGINT,
             user_id STRING,
             event_type STRING,

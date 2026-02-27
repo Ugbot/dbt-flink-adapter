@@ -1,0 +1,113 @@
+version: 2
+
+sources:
+  - name: postgres_cdc
+    description: "PostgreSQL CDC sources for E2E testing — captures WAL changes"
+    tables:
+      - name: users
+        description: "User data captured via PostgreSQL CDC"
+        config:
+          type: streaming
+          primary_key: [user_id]
+          connector_properties:
+            connector: postgres-cdc
+            hostname: postgres
+            port: '5432'
+            username: postgres
+            password: postgres
+            database-name: testdb
+            schema-name: flink_test
+            table-name: users
+            slot.name: flink_e2e_users_slot
+            decoding.plugin.name: pgoutput
+        columns:
+          - name: user_id
+            data_type: INT
+            description: "Unique user identifier"
+          - name: username
+            data_type: STRING
+            description: "Username"
+          - name: email
+            data_type: STRING
+            description: "User email address"
+          - name: created_at
+            data_type: TIMESTAMP(3)
+            description: "Account creation timestamp"
+          - name: updated_at
+            data_type: TIMESTAMP(3)
+            description: "Last update timestamp"
+          - name: status
+            data_type: STRING
+            description: "Account status (active/inactive/suspended)"
+
+      - name: orders
+        description: "Order data captured via PostgreSQL CDC (excludes generated total_amount)"
+        config:
+          type: streaming
+          primary_key: [order_id]
+          connector_properties:
+            connector: postgres-cdc
+            hostname: postgres
+            port: '5432'
+            username: postgres
+            password: postgres
+            database-name: testdb
+            schema-name: flink_test
+            table-name: orders
+            slot.name: flink_e2e_orders_slot
+            decoding.plugin.name: pgoutput
+        columns:
+          - name: order_id
+            data_type: INT
+            description: "Unique order identifier"
+          - name: user_id
+            data_type: INT
+            description: "User who placed the order"
+          - name: product_name
+            data_type: STRING
+            description: "Product purchased"
+          - name: quantity
+            data_type: INT
+            description: "Quantity ordered"
+          - name: price
+            data_type: "DECIMAL(10, 2)"
+            description: "Unit price"
+          - name: order_date
+            data_type: TIMESTAMP(3)
+            description: "When the order was placed"
+          - name: status
+            data_type: STRING
+            description: "Order status (pending/confirmed/shipped/delivered/completed)"
+
+      - name: events
+        description: "User event stream captured via PostgreSQL CDC"
+        config:
+          type: streaming
+          primary_key: [event_id]
+          connector_properties:
+            connector: postgres-cdc
+            hostname: postgres
+            port: '5432'
+            username: postgres
+            password: postgres
+            database-name: testdb
+            schema-name: flink_test
+            table-name: events
+            slot.name: flink_e2e_events_slot
+            decoding.plugin.name: pgoutput
+        columns:
+          - name: event_id
+            data_type: INT
+            description: "Unique event identifier"
+          - name: user_id
+            data_type: INT
+            description: "User who triggered the event"
+          - name: event_type
+            data_type: STRING
+            description: "Type of event (login, page_view, purchase, etc.)"
+          - name: event_data
+            data_type: STRING
+            description: "Event payload as JSON string"
+          - name: event_timestamp
+            data_type: TIMESTAMP(3)
+            description: "When the event occurred"

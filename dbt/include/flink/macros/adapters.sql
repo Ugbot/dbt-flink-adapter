@@ -38,7 +38,12 @@ dbt docs: https://docs.getdbt.com/docs/contributing/building-a-new-adapter
 */
 
 {% macro flink__create_schema(relation) -%}
-'''Creates a new schema in the  target database, if schema already exists, method is a no-op. '''
+  {%- set schema = relation.without_identifier().schema -%}
+  {%- if schema -%}
+    {%- call statement('create_schema', auto_begin=False) -%}
+      CREATE DATABASE IF NOT EXISTS {{ schema }}
+    {%- endcall -%}
+  {%- endif -%}
 {% endmacro %}
 
 /*
@@ -54,20 +59,27 @@ dbt docs: https://docs.getdbt.com/docs/contributing/building-a-new-adapter
 
 */
 
+{% macro flink__temporary_keyword(catalog_managed) %}
+  {%- if not catalog_managed -%}TEMPORARY {% endif -%}
+{% endmacro %}
+
 {% macro flink__drop_relation(relation) -%}
-'''Deletes relatonship identifer between tables.'''
-/*
-  1. If database exists
-  2. Create a new schema if passed schema does not exist already
-*/
+  {%- call statement('drop_relation', auto_begin=False) -%}
+    {% if relation.type == 'view' %}
+    DROP VIEW IF EXISTS {{ relation.render() }}
+    {% else %}
+    DROP TABLE IF EXISTS {{ relation.render() }}
+    {% endif %}
+  {%- endcall -%}
 {% endmacro %}
 
 {% macro flink__drop_schema(relation) -%}
-'''drops a schema in a target database.'''
-/*
-  1. If database exists
-  2. search all calls of schema, and change include value to False, cascade it to backtrack
-*/
+  {%- set schema = relation.without_identifier().schema -%}
+  {%- if schema -%}
+    {%- call statement('drop_schema', auto_begin=False) -%}
+      DROP DATABASE IF EXISTS {{ schema }} CASCADE
+    {%- endcall -%}
+  {%- endif -%}
 {% endmacro %}
 
 /*

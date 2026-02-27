@@ -8,7 +8,7 @@
         incremental_strategy='append',
         catalog_managed=true,
         execution_mode='streaming',
-        schema='''
+        columns='''
             event_type STRING,
             event_count BIGINT,
             window_start TIMESTAMP(3),

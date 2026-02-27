@@ -1,0 +1,10 @@
+flink:
+  target: dev
+  outputs:
+    dev:
+      type: flink
+      host: localhost
+      port: 8083
+      database: default_catalog
+      schema: default_database
+      session_name: cdc_pipeline_dev

@@ -82,7 +82,7 @@ Full documentation lives in [`docs/`](docs/index.md):
 {{ config(
     materialized='streaming_table',
     execution_mode='streaming',
-    schema='window_start TIMESTAMP(3), window_end TIMESTAMP(3), user_id STRING, event_count BIGINT',
+    columns='window_start TIMESTAMP(3), window_end TIMESTAMP(3), user_id STRING, event_count BIGINT',
     properties={'connector': 'blackhole'}
 ) }}
 

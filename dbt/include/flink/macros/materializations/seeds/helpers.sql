@@ -10,8 +10,17 @@
   {% set connector_properties = config.get('default_connector_properties', {}) %}
   {% set _dummy = connector_properties.update(config.get('connector_properties', {})) %}
 
+  {# Default to blackhole connector when no connector is specified (Flink requires a connector) #}
+  {% if not catalog_managed and not connector_properties.get('connector') %}
+    {% set _dummy = connector_properties.update({'connector': 'blackhole'}) %}
+  {% endif %}
+
   {% set sql %}
+    {% if catalog_managed %}
     create table if not exists {{ this.render() }} (
+    {% else %}
+    create temporary table if not exists {{ this.render() }} (
+    {% endif %}
         {%- for col_name in agate_table.column_names -%}
             {%- set inferred_type = adapter.convert_type(agate_table, loop.index0) -%}
             {%- set type = column_override.get(col_name, inferred_type) -%}

@@ -60,13 +60,13 @@
   {% call statement('drop_table') -%}
     /** mode('{{execution_mode}}') */ /** upgrade_mode('{{upgrade_mode}}') */ /** job_state('{{job_state}}') */
     {% if execution_config %}/** execution_config('{% for cfg_name in execution_config %}{{cfg_name}}={{execution_config[cfg_name]}}{% if not loop.last %};{% endif %}{% endfor %}') */{% endif %}
-    drop {% if temporary: -%}temporary {%- endif %}table if exists {{ this.render() }}
+    drop {{ flink__temporary_keyword(catalog_managed) }}table if exists {{ this.render() }}
   {%- endcall %}
 
   {# Step 2: CREATE TABLE AS SELECT #}
   /** mode('{{execution_mode}}') */ /** upgrade_mode('{{upgrade_mode}}') */ /** job_state('{{job_state}}') */
-  /** drop_statement('drop {% if temporary: -%}temporary {%- endif %}table if exists `{{ this.render() }}`') */
-  create {% if temporary: -%}temporary {%- endif %}table {{ this.render() }}
+  /** drop_statement('drop {{ flink__temporary_keyword(catalog_managed) }}table if exists {{ this.render() }}') */
+  create {{ flink__temporary_keyword(catalog_managed) }}table {{ this.render() }}
   {%- if contract_config.enforced -%}
     {{ get_table_columns_and_constraints() }}
   {%- endif %}

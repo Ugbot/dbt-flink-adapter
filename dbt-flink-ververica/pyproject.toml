@@ -1,0 +1,101 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dbt-flink-ververica"
+version = "0.1.0"
+description = "CLI tool for deploying dbt-flink projects to Ververica Cloud"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "dbt-flink Contributors"}
+]
+keywords = ["dbt", "flink", "ververica", "data", "sql"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
+dependencies = [
+    "typer[all]>=0.9.0",           # CLI framework with Rich support
+    "pydantic>=2.0.0",              # Data validation
+    "pydantic-settings>=2.0.0",     # Settings management
+    "httpx>=0.27.0",                # Async HTTP client
+    "keyring>=24.0.0",              # Secure credential storage
+    "rich>=13.0.0",                 # Beautiful terminal output
+    "tomli>=2.0.0; python_version<'3.11'",  # TOML parsing (backport)
+    "tomli-w>=1.0.0",               # TOML writing
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-httpx>=0.27.0",
+    "mypy>=1.0.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+]
+
+local = [
+    "podman>=5.0.0",                # Container management (podman preferred)
+    "requests>=2.28.0",             # Transitive dep for podman-py
+]
+docker = [
+    "docker>=7.0.0",                # Container management (docker fallback)
+    "requests>=2.28.0",             # Transitive dep for docker-py
+]
+jar = [
+    "jinja2>=3.0.0",                # Template rendering for Maven/Java
+]
+
+[project.scripts]
+dbt-flink-ververica = "dbt_flink_ververica.main:app"
+
+[project.urls]
+Homepage = "https://github.com/decimalst/dbt-flink-adapter"
+Documentation = "https://github.com/decimalst/dbt-flink-adapter/tree/main/dbt-flink-ververica"
+Repository = "https://github.com/decimalst/dbt-flink-adapter"
+Issues = "https://github.com/decimalst/dbt-flink-adapter/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["dbt_flink_ververica*"]
+
+[tool.setuptools.package-data]
+dbt_flink_ververica = ["py.typed", "templates/**/*"]
+
+[tool.black]
+line-length = 100
+target-version = ['py310']
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = ["E501"]  # Line too long (handled by black)
+
+[tool.ruff.per-file-ignores]
+"__init__.py" = ["F401"]  # Imported but unused
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --cov=dbt_flink_ververica --cov-report=term-missing"

@@ -5,9 +5,19 @@ the CLI tool, including Ververica Cloud settings, dbt project settings,
 and deployment options.
 """
 
+import logging
+import re
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Optional
+
 from pydantic import BaseModel, Field, HttpUrl, field_validator
+
+# Jar patterns may contain path characters, glob wildcards, hyphens, and commas
+# (for brace expansion like {kafka,jdbc}).  Anything outside this set — shell
+# metacharacters like ;|&$`'"()! etc. — is rejected to prevent command injection.
+_SAFE_JAR_PATTERN_RE = re.compile(r"^[a-zA-Z0-9_/.*?\-\[\]{},]+$")
+
+logger = logging.getLogger(__name__)
 
 
 class VervericaConfig(BaseModel):
@@ -159,6 +169,11 @@ class DeploymentConfig(BaseModel):
         description="Tags for the deployment"
     )
 
+    additional_dependencies: List[str] = Field(
+        default_factory=list,
+        description="JAR URIs for additional connector dependencies (e.g., CDC JARs)"
+    )
+
     @field_validator('restore_strategy')
     @classmethod
     def validate_restore_strategy(cls, v: str) -> str:
@@ -209,6 +224,122 @@ class SqlProcessingConfig(BaseModel):
     )
 
 
+class LocalFlinkConfig(BaseModel):
+    """Configuration for local Flink cluster deployments via SQL CLI.
+
+    This configures how the CLI interacts with a local Flink cluster running
+    in containers (podman or docker). SQL is deployed by copying scripts into
+    the JobManager container and executing them via sql-client.sh.
+
+    Attributes:
+        jobmanager_container: Container name for the Flink JobManager
+        flink_rest_url: Flink REST API URL for job status queries
+        sql_dir: Directory containing ordered SQL scripts
+        jar_patterns: Glob patterns to find connector JARs inside the container
+        remote_sql_dir: Temp directory inside container for SQL files
+        services: Container name mapping for health checks
+    """
+
+    jobmanager_container: str = Field(
+        default="flink-jobmanager",
+        description="Flink JobManager container name for sql-client.sh execution",
+        min_length=1,
+    )
+
+    flink_rest_url: str = Field(
+        default="http://localhost:18081",
+        description="Flink REST API URL for job status queries",
+    )
+
+    sql_dir: Optional[Path] = Field(
+        default=None,
+        description="Directory containing ordered SQL scripts (01_sources.sql, 02_staging.sql, etc.)",
+    )
+
+    jar_patterns: List[str] = Field(
+        default_factory=lambda: [
+            "/opt/flink/lib/flink-sql-connector-*.jar",
+            "/opt/flink/lib/flink-connector-*.jar",
+            "/opt/flink/lib/postgresql-*.jar",
+        ],
+        description="Glob patterns to find connector JARs inside the container",
+    )
+
+    remote_sql_dir: str = Field(
+        default="/tmp/pipeline-sql",
+        description="Temp directory inside container for SQL files",
+        min_length=1,
+    )
+
+    services: Dict[str, str] = Field(
+        default_factory=lambda: {
+            "jobmanager": "flink-jobmanager",
+            "sql-gateway": "flink-sql-gateway",
+            "kafka": "tk-kafka",
+            "postgres": "tk-postgres",
+        },
+        description="Container name mapping for health checks (label -> container name)",
+    )
+
+    job_verification_delay_seconds: float = Field(
+        default=3.0,
+        description=(
+            "Seconds to wait after deployment before querying job status. "
+            "Flink needs time to schedule and start submitted jobs."
+        ),
+        ge=0.0,
+        le=30.0,
+    )
+
+    rest_api_timeout_seconds: float = Field(
+        default=10.0,
+        description=(
+            "Timeout in seconds for Flink REST API requests "
+            "(job status, cancel, etc.)."
+        ),
+        ge=1.0,
+        le=120.0,
+    )
+
+    @field_validator("flink_rest_url")
+    @classmethod
+    def validate_flink_rest_url(cls, v: str) -> str:
+        """Ensure URL doesn't have trailing slash."""
+        return v.rstrip("/")
+
+    @field_validator("sql_dir")
+    @classmethod
+    def validate_sql_dir(cls, v: Optional[Path]) -> Optional[Path]:
+        """Resolve sql_dir to absolute path if provided."""
+        if v is not None:
+            v = v.resolve()
+            if not v.exists():
+                logger.warning("SQL directory does not exist yet: %s", v)
+        return v
+
+    @field_validator("jar_patterns")
+    @classmethod
+    def validate_jar_patterns(cls, v: List[str]) -> List[str]:
+        """Reject jar patterns containing shell metacharacters.
+
+        Patterns are interpolated into ``bash -c 'ls -1 <pattern>'`` inside
+        the container, so they must not contain characters that could alter
+        the command (semicolons, pipes, backticks, dollar signs, etc.).
+        Only path separators, alphanumerics, hyphens, dots, underscores,
+        and glob wildcards (*, ?, [], {}) are permitted.
+
+        Raises:
+            ValueError: If any pattern contains unsafe characters.
+        """
+        for pattern in v:
+            if not _SAFE_JAR_PATTERN_RE.match(pattern):
+                raise ValueError(
+                    f"Jar pattern contains unsafe characters: {pattern!r}. "
+                    f"Only path characters and glob wildcards are allowed."
+                )
+        return v
+
+
 class ToolConfig(BaseModel):
     """Complete tool configuration combining all sub-configs.
 
@@ -234,6 +365,11 @@ class ToolConfig(BaseModel):
     sql_processing: SqlProcessingConfig = Field(
         default_factory=SqlProcessingConfig,
         description="SQL processing configuration"
+    )
+
+    local_flink: Optional[LocalFlinkConfig] = Field(
+        default=None,
+        description="Local Flink cluster deployment configuration"
     )
 
     @classmethod

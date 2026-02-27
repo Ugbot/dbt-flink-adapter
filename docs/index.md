@@ -27,9 +27,19 @@ graph LR
         API --> MANAGED
     end
 
+    subgraph "Local Flink Deployment"
+        OSSCLI["dbt-flink-ververica CLI<br/>(local commands)"]
+        CONTAINER["podman / docker"]
+        SQLCLI["sql-client.sh<br/>in JobManager"]
+        OSSCLI -->|container exec| CONTAINER
+        CONTAINER --> SQLCLI
+        SQLCLI --> FLINK
+    end
+
     style DBT fill:#ff694f,color:#fff
     style ADAPTER fill:#326ce5,color:#fff
     style CLI fill:#326ce5,color:#fff
+    style OSSCLI fill:#326ce5,color:#fff
     style FLINK fill:#e6522c,color:#fff
     style MANAGED fill:#e6522c,color:#fff
 ```
@@ -52,6 +62,7 @@ Choose the path that matches your goal:
 | Goal | Guide | Time |
 |---|---|---|
 | Run Flink SQL models on your laptop | [Local Quickstart](getting-started/quickstart-local.md) | 15 min |
+| Deploy to a local Flink cluster | [Flink Deployment Guide](guides/ververica-deployment.md#local-flink-deployment) | 10 min |
 | Deploy streaming jobs to Ververica Cloud | [Ververica Quickstart](getting-started/quickstart-ververica.md) | 30 min |
 | Install the adapter and CLI | [Installation](getting-started/installation.md) | 5 min |
 
@@ -77,8 +88,9 @@ Choose the path that matches your goal:
 - [Streaming Pipelines](guides/streaming-pipelines.md) -- Watermarks, windows, Kafka integration
 - [Batch Processing](guides/batch-processing.md) -- Bounded sources, filesystem connectors, JDBC
 - [Incremental Models](guides/incremental-models.md) -- Append, insert_overwrite, and merge strategies
-- [Sources and Connectors](guides/sources-and-connectors.md) -- Source definitions, column types, CDC setup
-- [Ververica Deployment](guides/ververica-deployment.md) -- Deploy models to Ververica Cloud
+- [Sources and Connectors](guides/sources-and-connectors.md) -- Source definitions, column types, connector configuration
+- [CDC Sources](guides/cdc-sources.md) -- Change Data Capture with MySQL, PostgreSQL, MongoDB, and more
+- [Flink Deployment](guides/ververica-deployment.md) -- Deploy to Ververica Cloud or local Flink clusters
 - [Workflow Tutorial](guides/workflow-tutorial.md) -- One-command deployment: compile, transform, deploy, and start
 - [CI/CD](guides/ci-cd.md) -- GitHub Actions workflows and multi-environment deployment
 

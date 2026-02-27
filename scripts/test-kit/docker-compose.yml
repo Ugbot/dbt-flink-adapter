@@ -1,0 +1,249 @@
+services:
+  # Flink JobManager
+  jobmanager:
+    image: flink:1.20-java11
+    hostname: jobmanager
+    container_name: flink-jobmanager
+    ports:
+      - "18081:8081"  # Web UI
+      - "16123:6123"  # RPC
+    command: jobmanager
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: jobmanager
+        jobmanager.rpc.port: 6123
+        jobmanager.bind-host: 0.0.0.0
+        rest.address: 0.0.0.0
+        rest.bind-address: 0.0.0.0
+        rest.port: 8081
+        # Checkpointing
+        execution.checkpointing.interval: 10s
+        execution.checkpointing.mode: EXACTLY_ONCE
+        state.backend: hashmap
+        state.checkpoints.dir: file:///tmp/flink-checkpoints
+        # Enable SQL Gateway
+        sql-gateway.endpoint.rest.address: 0.0.0.0
+        # Load CDC JARs from volume mount subdirectory
+        classloader.additional-classpaths: /opt/flink/lib/cdc/
+    volumes:
+      - flink-checkpoints:/tmp/flink-checkpoints
+      - cdc-connectors:/opt/flink/lib/cdc
+    networks:
+      - flink-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/overview"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Flink TaskManager
+  taskmanager:
+    image: flink:1.20-java11
+    depends_on:
+      - jobmanager
+    command: taskmanager
+    deploy:
+      replicas: 2
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: jobmanager
+        taskmanager.numberOfTaskSlots: 4
+        taskmanager.memory.process.size: 2048m
+        taskmanager.memory.flink.size: 1536m
+        # Load CDC JARs from volume mount subdirectory
+        classloader.additional-classpaths: /opt/flink/lib/cdc/
+    volumes:
+      - flink-checkpoints:/tmp/flink-checkpoints
+      - cdc-connectors:/opt/flink/lib/cdc
+    networks:
+      - flink-network
+
+  # Flink SQL Gateway
+  sql-gateway:
+    image: flink:1.20-java11
+    hostname: sql-gateway
+    container_name: flink-sql-gateway
+    depends_on:
+      - jobmanager
+    ports:
+      - "18083:8083"  # SQL Gateway REST API
+    command: >
+      bash -c "
+        echo 'Starting SQL Gateway...' &&
+        /opt/flink/bin/sql-gateway.sh start -Dsql-gateway.endpoint.rest.address=0.0.0.0 &&
+        echo 'SQL Gateway started on port 8083' &&
+        sleep infinity
+      "
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: jobmanager
+        rest.address: jobmanager
+        rest.port: 8081
+        sql-gateway.endpoint.rest.address: 0.0.0.0
+        sql-gateway.endpoint.rest.port: 8083
+        sql-gateway.session.idle-timeout: 30min
+        sql-gateway.session.check-interval: 1min
+        # Load CDC JARs from volume mount subdirectory
+        classloader.additional-classpaths: /opt/flink/lib/cdc/
+    volumes:
+      - cdc-connectors:/opt/flink/lib/cdc
+    networks:
+      - flink-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083/v1/info"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Kafka for streaming data
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    hostname: kafka
+    container_name: tk-kafka
+    ports:
+      - "19092:9092"
+      - "19093:9093"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT'
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092'
+      KAFKA_LISTENERS: 'PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093,PLAINTEXT_HOST://0.0.0.0:9092'
+      KAFKA_INTER_BROKER_LISTENER_NAME: 'PLAINTEXT'
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:29093'
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_LOG_DIRS: '/tmp/kraft-combined-logs'
+      CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks:
+      - flink-network
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # PostgreSQL for CDC testing
+  postgres:
+    image: postgres:15-alpine
+    hostname: postgres
+    container_name: tk-postgres
+    ports:
+      - "15432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: testdb
+    command:
+      - "postgres"
+      - "-c"
+      - "wal_level=logical"
+      - "-c"
+      - "max_replication_slots=10"
+      - "-c"
+      - "max_wal_senders=10"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - flink-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MySQL for CDC testing
+  mysql:
+    image: mysql:8.0
+    hostname: mysql
+    container_name: tk-mysql
+    ports:
+      - "13306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: mysql
+      MYSQL_DATABASE: testdb
+      MYSQL_USER: flink
+      MYSQL_PASSWORD: flink
+    command:
+      - --default-authentication-plugin=mysql_native_password
+      - --binlog-format=ROW
+      - --log-bin=mysql-bin
+      - --server-id=1
+      - --binlog-row-image=FULL
+      - --gtid-mode=ON
+      - --enforce-gtid-consistency=ON
+    volumes:
+      - mysql-data:/var/lib/mysql
+    networks:
+      - flink-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-proot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Grafana for pipeline visualization
+  grafana:
+    image: grafana/grafana:11.4.0
+    hostname: grafana
+    container_name: tk-grafana
+    ports:
+      - "13000:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: "/var/lib/grafana/dashboards/cdc-pipeline.json"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana/dashboards:/var/lib/grafana/dashboards
+    networks:
+      - flink-network
+    depends_on:
+      - postgres
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Python environment for PyFlink jobs
+  pyflink:
+    image: python:3.13-slim
+    hostname: pyflink
+    container_name: tk-pyflink
+    working_dir: /app
+    command: >
+      bash -c "
+        apt-get update &&
+        apt-get install -y default-jdk curl &&
+        pip install --no-cache-dir apache-flink==1.20.0 kafka-python faker &&
+        echo 'PyFlink environment ready' &&
+        tail -f /dev/null
+      "
+    environment:
+      - FLINK_HOME=/opt/flink
+      - PYFLINK_CLIENT_EXECUTABLE=/usr/local/bin/python3
+    networks:
+      - flink-network
+    depends_on:
+      - jobmanager
+      - kafka
+
+volumes:
+  flink-checkpoints:
+  kafka-data:
+  postgres-data:
+  mysql-data:
+  cdc-connectors:
+
+networks:
+  flink-network:
+    driver: bridge

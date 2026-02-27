@@ -24,10 +24,13 @@ from dbt.tests.util import run_dbt
 # ---------------------------------------------------------------------------
 # Skip guard: only run when Fluss cluster is available
 # ---------------------------------------------------------------------------
-pytestmark = pytest.mark.skipif(
-    not os.getenv("FLUSS_AVAILABLE"),
-    reason="Set FLUSS_AVAILABLE=1 with a running Fluss cluster to enable",
-)
+pytestmark = [
+    pytest.mark.fluss,
+    pytest.mark.skipif(
+        not os.getenv("FLUSS_AVAILABLE"),
+        reason="Set FLUSS_AVAILABLE=1 with a running Fluss cluster to enable",
+    ),
+]
 
 
 # ---------------------------------------------------------------------------

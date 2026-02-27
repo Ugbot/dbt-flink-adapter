@@ -46,6 +46,7 @@ class ProcessedSql(BaseModel):
         drop_statements: DROP statements extracted from hints
         hints: Parsed query hints
         final_sql: Complete SQL ready for deployment
+        additional_dependencies: JAR URIs extracted from additional_dependencies hint
     """
 
     original_sql: str = Field(description="Original SQL with hints")
@@ -63,6 +64,10 @@ class ProcessedSql(BaseModel):
         description="Parsed query hints"
     )
     final_sql: str = Field(description="Complete SQL for deployment")
+    additional_dependencies: List[str] = Field(
+        default_factory=list,
+        description="JAR URIs extracted from additional_dependencies hint"
+    )
 
 
 class CompiledModel(BaseModel):
@@ -206,6 +211,10 @@ class SqlTransformer:
             # drop_statement is handled separately
             return None
 
+        elif hint.name == 'additional_dependencies':
+            # additional_dependencies is handled separately
+            return None
+
         # Check mapping table
         config_key = cls.HINT_TO_CONFIG.get(hint.name)
         if config_key:
@@ -217,7 +226,7 @@ class SqlTransformer:
 
     # Pattern to validate DROP statements (prevent SQL injection)
     DROP_PATTERN = re.compile(
-        r'^\s*DROP\s+(TABLE|VIEW|DATABASE|CATALOG)\s+(?:IF\s+EXISTS\s+)?'
+        r'^\s*DROP\s+(?:TEMPORARY\s+)?(TABLE|VIEW|DATABASE|CATALOG)\s+(?:IF\s+EXISTS\s+)?'
         r'[\w.`]+\s*(?:CASCADE|RESTRICT)?\s*;?\s*$',
         re.IGNORECASE
     )
@@ -249,7 +258,7 @@ class SqlTransformer:
                     logger.error(f"Invalid DROP statement format: {drop_sql[:100]}")
                     raise ValueError(
                         f"DROP statement failed security validation. "
-                        f"Expected format: DROP [TABLE|VIEW|DATABASE|CATALOG] [IF EXISTS] name [CASCADE|RESTRICT]. "
+                        f"Expected format: DROP [TEMPORARY] [TABLE|VIEW|DATABASE|CATALOG] [IF EXISTS] name [CASCADE|RESTRICT]. "
                         f"Got: {drop_sql[:100]}"
                     )
 
@@ -261,6 +270,33 @@ class SqlTransformer:
                 logger.debug(f"Extracted DROP statement: {drop_sql[:50]}...")
 
         return drop_statements
+
+    @classmethod
+    def extract_additional_dependencies(cls, hints: List[QueryHint]) -> List[str]:
+        """Extract additional JAR dependency URIs from hints.
+
+        Parses the ``additional_dependencies`` hint which contains a
+        comma-separated list of JAR URIs.
+
+        Args:
+            hints: List of parsed hints
+
+        Returns:
+            List of JAR URI strings
+        """
+        dependencies: List[str] = []
+
+        for hint in hints:
+            if hint.name == 'additional_dependencies':
+                raw_deps = hint.value.strip()
+                if raw_deps:
+                    for dep in raw_deps.split(','):
+                        dep = dep.strip()
+                        if dep:
+                            dependencies.append(dep)
+                            logger.debug(f"Extracted additional dependency: {dep}")
+
+        return dependencies
 
     @classmethod
     def generate_set_statements(cls, hints: List[QueryHint]) -> List[str]:
@@ -343,6 +379,13 @@ class SqlProcessor:
             drop_statements = SqlTransformer.extract_drop_statements(hints)
             logger.info(f"Extracted {len(drop_statements)} DROP statements")
 
+        # Extract additional dependencies from hints
+        additional_dependencies = SqlTransformer.extract_additional_dependencies(hints)
+        if additional_dependencies:
+            logger.info(
+                f"Extracted {len(additional_dependencies)} additional dependencies"
+            )
+
         # Assemble final SQL
         final_sql = self._assemble_final_sql(
             clean_sql,
@@ -356,7 +399,8 @@ class SqlProcessor:
             set_statements=set_statements,
             drop_statements=drop_statements,
             hints=hints,
-            final_sql=final_sql
+            final_sql=final_sql,
+            additional_dependencies=additional_dependencies,
         )
 
     def _assemble_final_sql(

@@ -26,7 +26,7 @@ class QueryHints:
     execution_config: Optional[Dict[str, str]] = None
     drop_statement: Optional[str] = None
 
-    def __init__(self, hints=None):
+    def __init__(self, hints: Optional[Dict[str, str]] = None) -> None:
         if hints is None:
             hints = {}
         if "fetch_max" in hints:

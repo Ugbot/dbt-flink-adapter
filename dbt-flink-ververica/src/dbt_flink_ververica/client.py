@@ -61,6 +61,9 @@ class DeploymentSpec(BaseModel):
         flink_config: Additional Flink configuration (maps to ``flinkConf``)
         labels: Deployment labels (key-value pairs)
         tags: Alias for labels (backward compatibility)
+        additional_dependencies: JAR URIs for additional connector dependencies
+            (e.g., CDC connector JARs). Passed in the ``sqlArtifact.additionalDependencies``
+            field of the Ververica API payload.
     """
 
     name: str = Field(description="Deployment name")
@@ -90,6 +93,10 @@ class DeploymentSpec(BaseModel):
     tags: Dict[str, str] = Field(
         default_factory=dict,
         description="Deployment tags (alias for labels)"
+    )
+    additional_dependencies: List[str] = Field(
+        default_factory=list,
+        description="JAR URIs for additional connector dependencies (e.g., CDC JARs)"
     )
 
 
@@ -296,6 +303,11 @@ class VervericaClient:
                 "kind": "SQLSCRIPT",
                 "sqlArtifact": {
                     "sqlScript": spec.sql_script,
+                    **(
+                        {"additionalDependencies": spec.additional_dependencies}
+                        if spec.additional_dependencies
+                        else {}
+                    ),
                 },
             },
         }

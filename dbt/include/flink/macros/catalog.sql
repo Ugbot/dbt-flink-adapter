@@ -63,19 +63,14 @@
 
   {% endfor %}
 
-  {# Try to get views as well (Flink 1.18+) #}
+  {# Try to get views as well — uses adapter method for graceful fallback #}
   {% for schema in schemas %}
 
-    {% set views_sql %}
-      SHOW VIEWS FROM {{ schema }}
-    {% endset %}
+    {# SHOW VIEWS FROM/IN may not be supported in all Flink versions #}
+    {% set view_names = adapter.list_views_in_schema(schema) %}
 
-    {# SHOW VIEWS may not be supported in all Flink versions #}
-    {% set view_results = run_query(views_sql) %}
-
-    {% if execute and view_results %}
-      {% for view_row in view_results %}
-        {% set view_name = view_row[0] %}
+    {% if execute and view_names %}
+      {% for view_name in view_names %}
 
         {# Get columns for this view using DESCRIBE #}
         {% set describe_sql %}
@@ -112,6 +107,7 @@
 
   {% endfor %}
 
-  {{ return(catalog_rows) }}
+  {# dbt-core expects an agate Table, not a raw list #}
+  {{ return(adapter.build_catalog_table(catalog_rows)) }}
 
 {%- endmacro %}

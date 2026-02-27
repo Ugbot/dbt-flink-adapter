@@ -1,0 +1,3 @@
+[submodule "lib/flink-gateway"]
+	path = lib/flink-gateway
+	url = https://github.com/Ugbot/pyflink-gateway.git

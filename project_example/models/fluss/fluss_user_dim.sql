@@ -1,6 +1,6 @@
 -- Fluss PrimaryKey table: user dimension with upsert/changelog semantics.
 --
--- The PRIMARY KEY in the schema config causes Fluss to create a PrimaryKey table.
+-- The PRIMARY KEY in the columns config causes Fluss to create a PrimaryKey table.
 -- PrimaryKey tables support upsert writes and generate changelogs downstream.
 --
 -- Requires:
@@ -13,7 +13,7 @@
         materialized='streaming_table',
         catalog_managed=true,
         execution_mode='streaming',
-        schema='''
+        columns='''
             user_id BIGINT,
             name STRING,
             email STRING,

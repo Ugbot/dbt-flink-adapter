@@ -7,8 +7,9 @@
   {# Get config #}
   {%- set execution_mode = config.get('execution_mode', 'streaming') -%}
   {%- set watermark_config = config.get('watermark', none) -%}
-  {%- set schema_definition = config.get('schema', none) -%}
+  {%- set schema_definition = config.get('columns', config.get('schema', none)) -%}
   {%- set sql_header = config.get('sql_header', none) -%}
+  {%- set primary_key = config.get('primary_key', none) -%}
 
   {# dbt-core 1.5+ model contracts support #}
   {%- set contract_config = config.get('contract') -%}
@@ -46,7 +47,7 @@
   {% call statement('drop_table') -%}
     /** mode('{{execution_mode}}') */ /** upgrade_mode('{{upgrade_mode}}') */ /** job_state('{{job_state}}') */
     {% if execution_config %}/** execution_config('{% for cfg_name in execution_config %}{{cfg_name}}={{execution_config[cfg_name]}}{% if not loop.last %};{% endif %}{% endfor %}') */{% endif %}
-    drop table if exists {{ this.render() }}
+    drop {{ flink__temporary_keyword(catalog_managed) }}table if exists {{ this.render() }}
   {%- endcall %}
 
   {# Step 2: CREATE TABLE with schema and watermark #}
@@ -54,11 +55,15 @@
     {# User provided explicit schema #}
     {%- call statement('create_table') -%}
       /** mode('{{execution_mode}}') */ /** upgrade_mode('{{upgrade_mode}}') */ /** job_state('{{job_state}}') */
-      create table {{ this.render() }} (
+      create {{ flink__temporary_keyword(catalog_managed) }}table {{ this.render() }} (
         {{ schema_definition }}
         {% if watermark_config %}
         ,
         {{ generate_watermark_clause(watermark_config) }}
+        {% endif %}
+        {% if primary_key %}
+        ,
+        PRIMARY KEY ({{ primary_key if primary_key is string else primary_key | join(', ') }}) NOT ENFORCED
         {% endif %}
       )
       {% set partition_by = config.get('partition_by', none) %}
@@ -84,14 +89,22 @@
 
   {% else %}
     {# No explicit schema - fall back to CREATE TABLE AS #}
-    {# Note: This won't support watermarks #}
+    {# Note: This won't support watermarks or primary keys #}
     {% if watermark_config %}
-      {{ exceptions.raise_compiler_error('Watermarks require explicit schema definition. Please add schema config.') }}
+      {{ exceptions.raise_compiler_error('Watermarks require explicit column definitions. Please add columns= config (not schema=, which dbt-core reserves for custom schema names).') }}
+    {% endif %}
+    {% if primary_key %}
+      {{ exceptions.raise_compiler_error(
+        "streaming_table with primary_key requires explicit 'columns' config. "
+        "PRIMARY KEY cannot be used with CREATE TABLE AS SELECT. "
+        "Add columns='`col1` TYPE, `col2` TYPE, ...' to your model config. "
+        "Do NOT use schema= for column definitions — dbt-core reserves it for custom schema names."
+      ) }}
     {% endif %}
 
     {%- call statement('main') -%}
       /** mode('{{execution_mode}}') */ /** upgrade_mode('{{upgrade_mode}}') */ /** job_state('{{job_state}}') */
-      create table {{ this.render() }}
+      create {{ flink__temporary_keyword(catalog_managed) }}table {{ this.render() }}
       {% set partition_by = config.get('partition_by', none) %}
       {% if partition_by is not none %}
       PARTITIONED BY ({{ partition_by | join(', ') }})

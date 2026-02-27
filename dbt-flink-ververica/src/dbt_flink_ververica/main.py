@@ -5,11 +5,14 @@ and deploying them to Ververica Cloud.
 """
 
 import logging
+import time
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
+
 import typer
 from rich.console import Console
 from rich.logging import RichHandler
+from rich.table import Table
 
 from . import __version__
 
@@ -540,6 +543,12 @@ def deploy_command(
         "--start",
         help="Auto-start the deployment after creation",
     ),
+    additional_deps: Optional[str] = typer.Option(
+        None,
+        "--additional-deps",
+        envvar="VERVERICA_ADDITIONAL_DEPS",
+        help="Comma-separated JAR URIs for additional dependencies (e.g., CDC connector JARs)",
+    ),
     project_dir: Path = typer.Option(
         Path.cwd(),
         "--project-dir",
@@ -604,12 +613,18 @@ def deploy_command(
         ) as progress:
             task = progress.add_task("Creating deployment...", total=None)
 
+            # Parse additional dependencies from CLI flag
+            deps_list: list[str] = []
+            if additional_deps:
+                deps_list = [d.strip() for d in additional_deps.split(",") if d.strip()]
+
             spec = DeploymentSpec(
                 name=name,
                 namespace=namespace,
                 sql_script=sql_content,
                 engine_version=engine_version,
                 parallelism=parallelism,
+                additional_dependencies=deps_list,
             )
 
             with VervericaClient(gateway_url, workspace_id, token) as client:
@@ -748,6 +763,12 @@ def workflow_command(
         "--dry-run",
         help="Compile and show SQL without deploying",
     ),
+    additional_deps: Optional[str] = typer.Option(
+        None,
+        "--additional-deps",
+        envvar="VERVERICA_ADDITIONAL_DEPS",
+        help="Comma-separated JAR URIs for additional dependencies (e.g., CDC connector JARs)",
+    ),
     config_file: Optional[Path] = typer.Option(
         None,
         "--config",
@@ -787,6 +808,16 @@ def workflow_command(
                 if config
                 else "vera-4.0.0-flink-1.20"
             )
+
+        # Resolve additional dependencies: CLI > TOML config (merged, not replaced)
+        cli_deps: list[str] = []
+        if additional_deps:
+            cli_deps = [d.strip() for d in additional_deps.split(",") if d.strip()]
+        toml_deps: list[str] = []
+        if config and config.deployment:
+            toml_deps = config.deployment.additional_dependencies
+        # CLI deps take priority (prepended), TOML deps added after
+        base_additional_deps = list(dict.fromkeys(cli_deps + toml_deps))
 
         # Validate required fields (not needed for dry-run)
         if not dry_run:
@@ -922,12 +953,23 @@ def workflow_command(
 
                 deployment_name = f"{name_prefix}-{model.name}"
 
+                # Merge additional dependencies: per-model hint > CLI > TOML
+                model_deps = (
+                    model.processed.additional_dependencies
+                    if model.processed
+                    else []
+                )
+                merged_deps = list(
+                    dict.fromkeys(model_deps + base_additional_deps)
+                )
+
                 spec = DeploymentSpec(
                     name=deployment_name,
                     namespace=namespace,
                     sql_script=model.processed.final_sql,
                     engine_version=engine_version,
                     parallelism=parallelism,
+                    additional_dependencies=merged_deps,
                 )
 
                 status = client.create_sqlscript_deployment(spec)
@@ -1068,6 +1110,457 @@ def config_validate(
 
     except Exception as e:
         console.print(f"[red]✗[/red] Config file is invalid: {e}")
+        raise typer.Exit(code=1)
+
+
+# ============================================================================
+# Local Flink Commands
+# ============================================================================
+
+local_app = typer.Typer(
+    name="local",
+    help="Deploy to local Flink clusters via sql-client.sh",
+)
+app.add_typer(local_app)
+
+
+def _build_local_config(
+    config: Optional["ToolConfig"],
+    container: Optional[str],
+    flink_url: Optional[str],
+    sql_dir: Optional[Path],
+) -> "LocalFlinkConfig":
+    """Build LocalFlinkConfig by merging TOML config with CLI overrides.
+
+    Priority: CLI flags > TOML config > defaults.
+
+    Args:
+        config: Loaded ToolConfig from TOML file (may be None).
+        container: CLI override for jobmanager container name.
+        flink_url: CLI override for Flink REST URL.
+        sql_dir: CLI override for SQL directory.
+
+    Returns:
+        Merged LocalFlinkConfig instance.
+    """
+    from .config import LocalFlinkConfig
+
+    # Start from TOML config or defaults
+    if config is not None and config.local_flink is not None:
+        local_config = config.local_flink.model_copy()
+    else:
+        local_config = LocalFlinkConfig()
+
+    # Apply CLI overrides
+    if container is not None:
+        local_config = local_config.model_copy(update={"jobmanager_container": container})
+    if flink_url is not None:
+        local_config = local_config.model_copy(update={"flink_rest_url": flink_url})
+    if sql_dir is not None:
+        local_config = local_config.model_copy(update={"sql_dir": sql_dir})
+
+    return local_config
+
+
+@local_app.command("deploy")
+def local_deploy(
+    sql_dir: Optional[Path] = typer.Option(
+        None,
+        "--sql-dir",
+        help="Directory with ordered SQL files (01_sources.sql, 02_staging.sql, etc.)",
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+    ),
+    sql_file: Optional[Path] = typer.Option(
+        None,
+        "--sql-file",
+        help="Single SQL file to deploy",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+    ),
+    container: Optional[str] = typer.Option(
+        None,
+        "--container",
+        help="JobManager container name [default: flink-jobmanager]",
+    ),
+    jar: Optional[List[str]] = typer.Option(
+        None,
+        "--jar",
+        help="Extra JAR path inside the container (repeatable)",
+    ),
+    no_auto_jars: bool = typer.Option(
+        False,
+        "--no-auto-jars",
+        help="Disable automatic JAR detection inside the container",
+    ),
+    flink_url: Optional[str] = typer.Option(
+        None,
+        "--flink-url",
+        help="Flink REST API URL [default: http://localhost:18081]",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Show SQL and JARs without executing",
+    ),
+    config_file: Optional[Path] = typer.Option(
+        None,
+        "--config",
+        "-c",
+        help="Path to TOML config file",
+    ),
+) -> None:
+    """Deploy SQL pipeline to a local Flink cluster via sql-client.sh.
+
+    Copies SQL files into the Flink JobManager container, discovers
+    connector JARs, and executes the pipeline. Each INSERT INTO statement
+    becomes a long-running streaming Flink job.
+
+    You must specify either --sql-dir (for ordered SQL scripts) or
+    --sql-file (for a single SQL file).
+    """
+    from rich.progress import Progress, SpinnerColumn, TextColumn
+    from rich.syntax import Syntax
+
+    from .local_deployer import LocalFlinkDeployer
+
+    try:
+        # Load config
+        config = _load_config(config_file)
+        local_config = _build_local_config(config, container, flink_url, sql_dir)
+
+        # Resolve SQL source
+        effective_sql_dir = sql_dir or local_config.sql_dir
+        if effective_sql_dir is None and sql_file is None:
+            console.print("[red]x[/red] Specify --sql-dir or --sql-file")
+            raise typer.Exit(code=1)
+        if effective_sql_dir is not None and sql_file is not None:
+            console.print("[red]x[/red] Specify --sql-dir or --sql-file, not both")
+            raise typer.Exit(code=1)
+
+        deployer = LocalFlinkDeployer(local_config)
+
+        # Step 1: Check services
+        console.print()
+        console.print("[bold]Step 1: Checking services[/bold]")
+
+        health = deployer.check_services()
+        all_healthy = True
+        for label, is_healthy in health.items():
+            if is_healthy:
+                console.print(f"  [green]v[/green] {label}")
+            else:
+                console.print(f"  [red]x[/red] {label}")
+                all_healthy = False
+
+        if not all_healthy:
+            console.print()
+            console.print("[red]x[/red] Some services are not healthy. Fix them before deploying.")
+            raise typer.Exit(code=1)
+
+        console.print()
+
+        # Step 2: Discover JARs
+        console.print("[bold]Step 2: Discovering JARs[/bold]")
+
+        auto_jars: List[str] = []
+        if not no_auto_jars:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=console,
+            ) as progress:
+                task = progress.add_task("Scanning for connector JARs...", total=None)
+                auto_jars = deployer.discover_jars()
+                progress.update(task, completed=True)
+
+            for j in auto_jars:
+                console.print(f"  [green]v[/green] {j}")
+        else:
+            console.print("  [yellow]![/yellow] Auto-detection disabled")
+
+        # Merge auto-discovered with extra --jar flags
+        extra_jars = list(jar) if jar else []
+        all_jars = list(dict.fromkeys(auto_jars + extra_jars))
+
+        if extra_jars:
+            for j in extra_jars:
+                console.print(f"  [cyan]+[/cyan] {j} (extra)")
+
+        console.print(f"  Total: {len(all_jars)} JARs")
+        console.print()
+
+        # Step 3: Dry-run or deploy
+        if dry_run:
+            console.print("[bold]-- DRY RUN --[/bold]")
+            console.print()
+
+            if effective_sql_dir is not None:
+                preview = deployer.get_sql_preview(effective_sql_dir)
+                syntax = Syntax(preview, "sql", theme="monokai", line_numbers=True)
+                console.print(syntax)
+            elif sql_file is not None:
+                content = sql_file.read_text(encoding="utf-8")
+                syntax = Syntax(content, "sql", theme="monokai", line_numbers=True)
+                console.print(syntax)
+
+            console.print()
+            console.print("[bold]JARs that would be used:[/bold]")
+            for j in all_jars:
+                console.print(f"  --jar {j}")
+
+            console.print()
+            console.print("[green]v[/green] Dry run complete. No changes made.")
+            raise typer.Exit(code=0)
+
+        console.print("[bold]Step 3: Deploying pipeline[/bold]")
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Executing sql-client.sh...", total=None)
+
+            if effective_sql_dir is not None:
+                result = deployer.deploy_sql_dir(effective_sql_dir, extra_jars=all_jars)
+            else:
+                if sql_file is None:
+                    console.print("[red]x[/red] No SQL source specified")
+                    raise typer.Exit(code=1)
+                sql_content = sql_file.read_text(encoding="utf-8")
+                result = deployer.deploy_sql_string(sql_content, extra_jars=all_jars)
+
+            progress.update(task, completed=True)
+
+        # Show output
+        if result.output.strip():
+            console.print()
+            console.print("[dim]--- sql-client.sh output ---[/dim]")
+            console.print(result.output.rstrip())
+            console.print("[dim]--- end output ---[/dim]")
+
+        if not result.success:
+            console.print()
+            console.print(f"[red]x[/red] Deployment failed (exit code {result.exit_code})")
+            raise typer.Exit(code=1)
+
+        console.print()
+        console.print("[green]v[/green] Pipeline SQL executed successfully")
+
+        # Step 4: Verify jobs
+        console.print()
+        console.print("[bold]Step 4: Verifying Flink jobs[/bold]")
+        time.sleep(local_config.job_verification_delay_seconds)
+
+        try:
+            jobs = deployer.get_running_jobs()
+            running_jobs = [j for j in jobs if j.state == "RUNNING"]
+
+            jobs_table = Table(title="Flink Jobs")
+            jobs_table.add_column("Job ID", style="cyan", max_width=14)
+            jobs_table.add_column("State", style="green")
+            jobs_table.add_column("Name", max_width=60)
+            jobs_table.add_column("Duration")
+
+            for job in jobs:
+                state_style = "green" if job.state == "RUNNING" else "yellow"
+                jobs_table.add_row(
+                    job.job_id[:12],
+                    f"[{state_style}]{job.state}[/{state_style}]",
+                    job.name[:60],
+                    job.duration_human,
+                )
+
+            console.print(jobs_table)
+            console.print()
+            console.print(f"[green]v[/green] {len(running_jobs)} streaming jobs running")
+
+        except RuntimeError as exc:
+            console.print(f"[yellow]![/yellow] Could not query Flink REST API: {exc}")
+            console.print("  Check Flink UI manually")
+
+    except typer.Exit:
+        raise
+    except Exception as exc:
+        console.print(f"[red]x[/red] Local deployment failed: {exc}")
+        logger.exception("Local deployment error")
+        raise typer.Exit(code=1)
+
+
+@local_app.command("status")
+def local_status(
+    flink_url: Optional[str] = typer.Option(
+        None,
+        "--flink-url",
+        help="Flink REST API URL [default: http://localhost:18081]",
+    ),
+    config_file: Optional[Path] = typer.Option(
+        None,
+        "--config",
+        "-c",
+        help="Path to TOML config file",
+    ),
+) -> None:
+    """Show status of Flink jobs in the cluster."""
+    from .local_deployer import LocalFlinkDeployer
+
+    try:
+        config = _load_config(config_file)
+        local_config = _build_local_config(config, container=None, flink_url=flink_url, sql_dir=None)
+
+        deployer = LocalFlinkDeployer(local_config)
+        jobs = deployer.get_running_jobs()
+
+        if not jobs:
+            console.print("No jobs found in the Flink cluster.")
+            return
+
+        jobs_table = Table(title=f"Flink Jobs ({local_config.flink_rest_url})")
+        jobs_table.add_column("Job ID", style="cyan", max_width=14)
+        jobs_table.add_column("State")
+        jobs_table.add_column("Name", max_width=60)
+        jobs_table.add_column("Duration")
+
+        running_count = 0
+        for job in jobs:
+            state_color = {
+                "RUNNING": "green",
+                "FINISHED": "blue",
+                "CANCELED": "yellow",
+                "FAILED": "red",
+            }.get(job.state, "white")
+
+            jobs_table.add_row(
+                job.job_id[:12],
+                f"[{state_color}]{job.state}[/{state_color}]",
+                job.name[:60],
+                job.duration_human,
+            )
+
+            if job.state == "RUNNING":
+                running_count += 1
+
+        console.print(jobs_table)
+        console.print()
+        console.print(f"Total: {len(jobs)} jobs ({running_count} running)")
+
+    except RuntimeError as exc:
+        console.print(f"[red]x[/red] {exc}")
+        raise typer.Exit(code=1)
+    except Exception as exc:
+        console.print(f"[red]x[/red] Failed to get job status: {exc}")
+        logger.exception("Local status error")
+        raise typer.Exit(code=1)
+
+
+@local_app.command("services")
+def local_services(
+    container: Optional[str] = typer.Option(
+        None,
+        "--container",
+        help="Override JobManager container name",
+    ),
+    config_file: Optional[Path] = typer.Option(
+        None,
+        "--config",
+        "-c",
+        help="Path to TOML config file",
+    ),
+) -> None:
+    """Check health of services required by the Flink pipeline."""
+    from .local_deployer import LocalFlinkDeployer
+
+    try:
+        config = _load_config(config_file)
+        local_config = _build_local_config(config, container=container, flink_url=None, sql_dir=None)
+
+        deployer = LocalFlinkDeployer(local_config)
+
+        console.print()
+        console.print(f"[bold]Container runtime:[/bold] {deployer.runtime.runtime_name} "
+                       f"v{deployer.runtime.runtime.version}")
+        console.print()
+
+        health = deployer.check_services()
+
+        services_table = Table(title="Service Health")
+        services_table.add_column("Service", style="cyan")
+        services_table.add_column("Container")
+        services_table.add_column("Status")
+
+        healthy_count = 0
+        for label, is_healthy in health.items():
+            container_name = local_config.services.get(label, "?")
+            if is_healthy:
+                services_table.add_row(label, container_name, "[green]healthy[/green]")
+                healthy_count += 1
+            else:
+                services_table.add_row(label, container_name, "[red]unhealthy[/red]")
+
+        console.print(services_table)
+        console.print()
+
+        total = len(health)
+        if healthy_count == total:
+            console.print(f"[green]v[/green] All {total} services healthy")
+        else:
+            console.print(f"[yellow]![/yellow] {healthy_count}/{total} services healthy")
+
+    except RuntimeError as exc:
+        console.print(f"[red]x[/red] {exc}")
+        raise typer.Exit(code=1)
+    except Exception as exc:
+        console.print(f"[red]x[/red] Failed to check services: {exc}")
+        logger.exception("Local services error")
+        raise typer.Exit(code=1)
+
+
+@local_app.command("cancel")
+def local_cancel(
+    job_id: str = typer.Argument(
+        help="Flink job ID to cancel (32-char hex string or prefix)",
+    ),
+    flink_url: Optional[str] = typer.Option(
+        None,
+        "--flink-url",
+        help="Flink REST API URL [default: http://localhost:18081]",
+    ),
+    config_file: Optional[Path] = typer.Option(
+        None,
+        "--config",
+        "-c",
+        help="Path to TOML config file",
+    ),
+) -> None:
+    """Cancel a running Flink job by its job ID."""
+    from .local_deployer import LocalFlinkDeployer
+
+    try:
+        config = _load_config(config_file)
+        local_config = _build_local_config(config, container=None, flink_url=flink_url, sql_dir=None)
+
+        deployer = LocalFlinkDeployer(local_config)
+
+        console.print(f"Cancelling job [cyan]{job_id}[/cyan] ...")
+        success, reason = deployer.cancel_job(job_id)
+
+        if success:
+            console.print(f"[green]v[/green] Job {job_id} cancel request accepted")
+        else:
+            console.print(f"[red]x[/red] Failed to cancel job {job_id}: {reason}")
+            raise typer.Exit(code=1)
+
+    except typer.Exit:
+        raise
+    except RuntimeError as exc:
+        console.print(f"[red]x[/red] {exc}")
+        raise typer.Exit(code=1)
+    except Exception as exc:
+        console.print(f"[red]x[/red] Failed to cancel job: {exc}")
+        logger.exception("Local cancel error")
         raise typer.Exit(code=1)
 
 
