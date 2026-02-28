@@ -1,0 +1,29 @@
+[ververica]
+gateway_url = "https://app.ververica.cloud"
+# workspace_id = "your-workspace-id-here"
+namespace = "default"
+default_engine_version = "vera-4.0.0-flink-1.20"
+
+[dbt]
+project_dir = "."
+target = "dev"
+
+[deployment]
+deployment_name = "mongo-cdc-demo"
+parallelism = 1
+restore_strategy = "LATEST_STATE"
+upgrade_strategy = "STATEFUL"
+
+# Connector JARs — adjust S3/GCS paths for your environment
+additional_dependencies = [
+    "s3://my-flink-jars/flink-sql-connector-mongodb-cdc-3.0.0.jar",
+    "s3://my-flink-jars/flink-sql-connector-mongodb-1.2.0-1.20.jar",
+    "s3://my-flink-jars/flink-sql-connector-kafka-3.3.0-1.20.jar",
+    "s3://my-flink-jars/flink-connector-jdbc-3.3.0-1.20.jar",
+    "s3://my-flink-jars/postgresql-42.7.4.jar",
+]
+
+[sql_processing]
+strip_hints = true
+generate_set_statements = true
+include_drop_statements = true
