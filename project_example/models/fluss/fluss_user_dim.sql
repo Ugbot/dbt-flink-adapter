@@ -28,7 +28,7 @@ SELECT
     name,
     email,
     registered_at
-FROM TABLE(
+FROM (
     VALUES (
         CAST(NULL AS BIGINT),
         CAST(NULL AS STRING),

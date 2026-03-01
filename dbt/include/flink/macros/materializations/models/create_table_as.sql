@@ -23,6 +23,8 @@
   {%- set sql_header = config.get('sql_header', none) -%}
   {%- set execution_mode = config.get('execution_mode', 'batch') -%}
   {%- set catalog_managed = config.get('catalog_managed', false) -%}
+  {%- set schema_definition = config.get('columns', config.get('schema', none)) -%}
+  {%- set primary_key = config.get('primary_key', none) -%}
 
   {# dbt-core 1.5+ model contracts support #}
   {%- set contract_config = config.get('contract') -%}
@@ -63,26 +65,60 @@
     drop {{ flink__temporary_keyword(catalog_managed) }}table if exists {{ this.render() }}
   {%- endcall %}
 
-  {# Step 2: CREATE TABLE AS SELECT #}
-  /** mode('{{execution_mode}}') */ /** upgrade_mode('{{upgrade_mode}}') */ /** job_state('{{job_state}}') */
-  /** drop_statement('drop {{ flink__temporary_keyword(catalog_managed) }}table if exists {{ this.render() }}') */
-  create {{ flink__temporary_keyword(catalog_managed) }}table {{ this.render() }}
-  {%- if contract_config.enforced -%}
-    {{ get_table_columns_and_constraints() }}
-  {%- endif %}
-  {% set partition_by = config.get('partition_by', none) %}
-  {% if partition_by is not none %}
-  PARTITIONED BY ({{ partition_by | join(', ') }})
-  {% endif %}
-  {# Only emit WITH clause when there are connector properties to set #}
-  {% if connector_properties %}
-  with (
-    {% for property_name in connector_properties -%}
-    '{{ property_name }}' = '{{ connector_properties[property_name] }}'
-    {%- if not loop.last %},{% endif %}
-    {% endfor %}
-  )
-  {% endif %}
-  as
+  {% if schema_definition or primary_key %}
+    {# Explicit columns/PK defined — use CREATE TABLE + INSERT INTO (required for catalog-managed PK tables) #}
+    {%- call statement('create_table') -%}
+      /** mode('{{execution_mode}}') */ /** upgrade_mode('{{upgrade_mode}}') */ /** job_state('{{job_state}}') */
+      create {{ flink__temporary_keyword(catalog_managed) }}table {{ this.render() }} (
+        {{ schema_definition }}
+        {% if primary_key and schema_definition and 'PRIMARY KEY' not in schema_definition | upper %}
+        ,
+        PRIMARY KEY ({{ primary_key if primary_key is string else primary_key | join(', ') }}) NOT ENFORCED
+        {% endif %}
+      )
+      {% set partition_by = config.get('partition_by', none) %}
+      {% if partition_by is not none %}
+      PARTITIONED BY ({{ partition_by | join(', ') }})
+      {% endif %}
+      {% if connector_properties %}
+      with (
+        {% for property_name in connector_properties -%}
+        '{{ property_name }}' = '{{ connector_properties[property_name] }}'
+        {%- if not loop.last %},{% endif %}
+        {% endfor %}
+      )
+      {% endif %}
+    {%- endcall -%}
+
+    {# INSERT INTO from the model query #}
+    /** mode('{{execution_mode}}') */ /** upgrade_mode('{{upgrade_mode}}') */ /** job_state('{{job_state}}') */
+    /** drop_statement('drop {{ flink__temporary_keyword(catalog_managed) }}table if exists {{ this.render() }}') */
+    {% if execution_config %}/** execution_config('{% for cfg_name in execution_config %}{{cfg_name}}={{execution_config[cfg_name]}}{% if not loop.last %};{% endif %}{% endfor %}') */{% endif %}
+    insert into {{ this.render() }}
     {{ sql }}
+
+  {% else %}
+    {# No explicit schema — standard CREATE TABLE AS SELECT path #}
+    /** mode('{{execution_mode}}') */ /** upgrade_mode('{{upgrade_mode}}') */ /** job_state('{{job_state}}') */
+    /** drop_statement('drop {{ flink__temporary_keyword(catalog_managed) }}table if exists {{ this.render() }}') */
+    create {{ flink__temporary_keyword(catalog_managed) }}table {{ this.render() }}
+    {%- if contract_config.enforced -%}
+      {{ get_table_columns_and_constraints() }}
+    {%- endif %}
+    {% set partition_by = config.get('partition_by', none) %}
+    {% if partition_by is not none %}
+    PARTITIONED BY ({{ partition_by | join(', ') }})
+    {% endif %}
+    {# Only emit WITH clause when there are connector properties to set #}
+    {% if connector_properties %}
+    with (
+      {% for property_name in connector_properties -%}
+      '{{ property_name }}' = '{{ connector_properties[property_name] }}'
+      {%- if not loop.last %},{% endif %}
+      {% endfor %}
+    )
+    {% endif %}
+    as
+      {{ sql }}
+  {% endif %}
 {%- endmacro %}

@@ -17,7 +17,6 @@
 #   FLUSS_AVAILABLE=1 pytest tests/functional/adapter/test_fluss_integration.py -v
 #   docker compose -f envs/flink-1.20-fluss/docker-compose.yml down -v
 
-version: '2'
 services:
   zookeeper:
     image: zookeeper:3.9.2
@@ -47,10 +46,11 @@ services:
         coordinator.host: coordinator-server
         remote.data.dir: /tmp/fluss/remote-data
     healthcheck:
-      test: ["CMD-SHELL", "nc -z localhost 9123 || exit 1"]
+      test: ["CMD-SHELL", "bash -c '(echo > /dev/tcp/coordinator-server/9123) 2>/dev/null'"]
       interval: 10s
       timeout: 5s
-      retries: 10
+      retries: 15
+      start_period: 15s
 
   tablet-server:
     image: apache/fluss:0.8.0-incubating
@@ -63,9 +63,16 @@ services:
         FLUSS_PROPERTIES=
         zookeeper.address: zookeeper:2181
         tablet-server.host: tablet-server
+        tablet-server.port: 9127
         tablet-server.id: 0
         data.dir: /tmp/fluss/data
         remote.data.dir: /tmp/fluss/remote-data
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '(echo > /dev/tcp/tablet-server/9127) 2>/dev/null'"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 15s
 
   jobmanager:
     image: apache/fluss-quickstart-flink:1.20-0.8.0-incubating
@@ -80,12 +87,19 @@ services:
         execution.checkpointing.interval: 10s
         state.checkpoints.dir: file:///tmp/flink-checkpoints
         state.savepoints.dir: file:///tmp/flink-savepoints
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8081/overview || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 15s
 
   taskmanager:
     image: apache/fluss-quickstart-flink:1.20-0.8.0-incubating
     command: taskmanager
     depends_on:
-      - jobmanager
+      jobmanager:
+        condition: service_healthy
     environment:
       - |
         FLINK_PROPERTIES=
@@ -94,6 +108,12 @@ services:
         execution.checkpointing.interval: 10s
         state.checkpoints.dir: file:///tmp/flink-checkpoints
         state.savepoints.dir: file:///tmp/flink-savepoints
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://jobmanager:8081/taskmanagers | grep -q taskmanagers || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 15s
 
   sql-gateway:
     image: apache/fluss-quickstart-flink:1.20-0.8.0-incubating
@@ -106,9 +126,18 @@ services:
         /docker-entrypoint.sh
         /opt/flink/bin/sql-gateway.sh start-foreground
     depends_on:
-      - jobmanager
-      - coordinator-server
-      - tablet-server
+      jobmanager:
+        condition: service_healthy
+      coordinator-server:
+        condition: service_healthy
+      tablet-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8083/v1/info || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 30s
     environment:
       - |
         FLINK_PROPERTIES=

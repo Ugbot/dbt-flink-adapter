@@ -21,7 +21,7 @@ SELECT
     user_id,
     event_type,
     event_time
-FROM TABLE(
+FROM (
     VALUES (
         CAST(NULL AS BIGINT),
         CAST(NULL AS BIGINT),

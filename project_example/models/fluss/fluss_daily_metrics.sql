@@ -11,7 +11,7 @@
         columns='''
             dt STRING,
             metric_name STRING,
-            value DOUBLE,
+            `value` DOUBLE,
             PRIMARY KEY (dt, metric_name) NOT ENFORCED
         '''
     )
@@ -20,12 +20,12 @@
 SELECT
     dt,
     metric_name,
-    value
-FROM TABLE(
+    `value`
+FROM (
     VALUES (
         CAST(NULL AS STRING),
         CAST(NULL AS STRING),
         CAST(NULL AS DOUBLE)
     )
-) AS t(dt, metric_name, value)
+) AS t(dt, metric_name, `value`)
 WHERE FALSE
