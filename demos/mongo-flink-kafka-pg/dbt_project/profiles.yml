@@ -1,0 +1,10 @@
+flink:
+  target: dev
+  outputs:
+    dev:
+      type: flink
+      host: localhost
+      port: 28083
+      database: default_catalog
+      schema: default_database
+      session_name: mongo_cdc_demo

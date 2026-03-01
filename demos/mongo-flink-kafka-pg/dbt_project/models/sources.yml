@@ -1,0 +1,212 @@
+version: 2
+
+sources:
+  # ---------------------------------------------------------------------------
+  # Datagen sources — Flink's built-in data generator for seeding MongoDB
+  # ---------------------------------------------------------------------------
+  - name: datagen
+    description: "Flink datagen connector sources for generating synthetic e-commerce data"
+    tables:
+      - name: customer_gen
+        description: "Generates sequential customer IDs and random city indices"
+        config:
+          type: streaming
+          connector_properties:
+            connector: datagen
+            rows-per-second: '5'
+            fields.seq_id.kind: sequence
+            fields.seq_id.start: '1'
+            fields.seq_id.end: '100000'
+            fields.city_idx.kind: random
+            fields.city_idx.min: '0'
+            fields.city_idx.max: '7'
+        columns:
+          - name: seq_id
+            data_type: BIGINT
+            description: "Sequential customer identifier"
+          - name: city_idx
+            data_type: INT
+            description: "Random index for city lookup"
+
+      - name: product_gen
+        description: "Generates sequential product IDs with random category and price indices"
+        config:
+          type: streaming
+          connector_properties:
+            connector: datagen
+            rows-per-second: '2'
+            fields.seq_id.kind: sequence
+            fields.seq_id.start: '1'
+            fields.seq_id.end: '50000'
+            fields.category_idx.kind: random
+            fields.category_idx.min: '0'
+            fields.category_idx.max: '3'
+            fields.stock_val.kind: random
+            fields.stock_val.min: '10'
+            fields.stock_val.max: '500'
+            fields.price_cents.kind: random
+            fields.price_cents.min: '499'
+            fields.price_cents.max: '99999'
+        columns:
+          - name: seq_id
+            data_type: BIGINT
+            description: "Sequential product identifier"
+          - name: category_idx
+            data_type: INT
+            description: "Random index for category lookup"
+          - name: stock_val
+            data_type: INT
+            description: "Random stock quantity"
+          - name: price_cents
+            data_type: INT
+            description: "Random price in cents for DECIMAL conversion"
+
+      - name: order_gen
+        description: "Generates sequential order IDs with random customer/product references and quantities"
+        config:
+          type: streaming
+          connector_properties:
+            connector: datagen
+            rows-per-second: '10'
+            fields.seq_id.kind: sequence
+            fields.seq_id.start: '1'
+            fields.seq_id.end: '1000000'
+            fields.customer_idx.kind: random
+            fields.customer_idx.min: '1'
+            fields.customer_idx.max: '1000'
+            fields.product_idx.kind: random
+            fields.product_idx.min: '1'
+            fields.product_idx.max: '500'
+            fields.qty.kind: random
+            fields.qty.min: '1'
+            fields.qty.max: '10'
+            fields.price_cents.kind: random
+            fields.price_cents.min: '499'
+            fields.price_cents.max: '99999'
+            fields.status_idx.kind: random
+            fields.status_idx.min: '0'
+            fields.status_idx.max: '3'
+        columns:
+          - name: seq_id
+            data_type: BIGINT
+            description: "Sequential order identifier"
+          - name: customer_idx
+            data_type: INT
+            description: "Random customer ID reference"
+          - name: product_idx
+            data_type: INT
+            description: "Random product ID reference"
+          - name: qty
+            data_type: INT
+            description: "Random order quantity"
+          - name: price_cents
+            data_type: INT
+            description: "Random unit price in cents"
+          - name: status_idx
+            data_type: INT
+            description: "Random index for order status lookup"
+
+  # ---------------------------------------------------------------------------
+  # MongoDB CDC sources — captures row-level changes from MongoDB change streams
+  # ---------------------------------------------------------------------------
+  - name: mongodb_cdc
+    description: "MongoDB CDC sources for capturing document changes via change streams"
+    tables:
+      - name: customers
+        description: "Customer documents captured via MongoDB CDC change streams"
+        config:
+          type: streaming
+          primary_key: [_id]
+          connector_properties:
+            connector: mongodb-cdc
+            hosts: mongodb:27017
+            database: ecommerce
+            collection: customers
+        columns:
+          - name: _id
+            data_type: STRING
+            description: "MongoDB document ID"
+          - name: customer_id
+            data_type: STRING
+            description: "Business customer identifier"
+          - name: name
+            data_type: STRING
+            description: "Customer full name"
+          - name: email
+            data_type: STRING
+            description: "Customer email address"
+          - name: city
+            data_type: STRING
+            description: "Customer city"
+          - name: created_at
+            data_type: TIMESTAMP(3)
+            description: "When the customer was created"
+
+      - name: products
+        description: "Product documents captured via MongoDB CDC change streams"
+        config:
+          type: streaming
+          primary_key: [_id]
+          connector_properties:
+            connector: mongodb-cdc
+            hosts: mongodb:27017
+            database: ecommerce
+            collection: products
+        columns:
+          - name: _id
+            data_type: STRING
+            description: "MongoDB document ID"
+          - name: product_id
+            data_type: STRING
+            description: "Business product identifier"
+          - name: name
+            data_type: STRING
+            description: "Product name"
+          - name: category
+            data_type: STRING
+            description: "Product category"
+          - name: price
+            data_type: "DECIMAL(10, 2)"
+            description: "Product price"
+          - name: stock
+            data_type: INT
+            description: "Current stock level"
+
+      - name: orders
+        description: "Order documents captured via MongoDB CDC change streams"
+        config:
+          type: streaming
+          primary_key: [_id]
+          connector_properties:
+            connector: mongodb-cdc
+            hosts: mongodb:27017
+            database: ecommerce
+            collection: orders
+        columns:
+          - name: _id
+            data_type: STRING
+            description: "MongoDB document ID"
+          - name: order_id
+            data_type: STRING
+            description: "Business order identifier"
+          - name: customer_id
+            data_type: STRING
+            description: "Customer who placed the order"
+          - name: product_id
+            data_type: STRING
+            description: "Product ordered"
+          - name: quantity
+            data_type: INT
+            description: "Quantity ordered"
+          - name: total
+            data_type: "DECIMAL(10, 2)"
+            description: "Order total amount"
+          - name: status
+            data_type: STRING
+            description: "Order status (pending/processing/shipped/delivered)"
+          - name: created_at
+            data_type: TIMESTAMP(3)
+            description: "When the order was created"
+          - name: updated_at
+            data_type: TIMESTAMP(3)
+            description: "Last update timestamp"

@@ -1,0 +1,15 @@
+name: 'mongo_cdc_demo'
+version: '1.0.0'
+config-version: 2
+
+profile: 'flink'
+
+model-paths: ["models"]
+
+on-run-start:
+  - "{{ create_sources() }}"
+
+models:
+  mongo_cdc_demo:
+    +materialized: streaming_table
+    +execution_mode: streaming

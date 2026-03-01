@@ -1,0 +1,193 @@
+services:
+  # MongoDB - single-node replica set for CDC change streams
+  mongodb:
+    image: mongo:7.0
+    hostname: mongodb
+    container_name: demo-mongodb
+    ports:
+      - "27117:27017"
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    volumes:
+      - mongo-data:/data/db
+    networks:
+      - demo-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Flink JobManager
+  jobmanager:
+    image: flink:1.20-java11
+    hostname: jobmanager
+    container_name: demo-jobmanager
+    ports:
+      - "28081:8081"
+    command: >
+      bash -c "
+        mkdir -p /tmp/flink-checkpoints &&
+        /docker-entrypoint.sh jobmanager
+      "
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: jobmanager
+        jobmanager.rpc.port: 6123
+        jobmanager.bind-host: 0.0.0.0
+        rest.address: 0.0.0.0
+        rest.bind-address: 0.0.0.0
+        rest.port: 8081
+        execution.checkpointing.interval: 10s
+        execution.checkpointing.mode: EXACTLY_ONCE
+        state.backend: hashmap
+        state.checkpoints.dir: file:///tmp/flink-checkpoints
+    volumes:
+      - ./sql:/sql
+    networks:
+      - demo-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/overview"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Flink TaskManager
+  taskmanager:
+    image: flink:1.20-java11
+    depends_on:
+      - jobmanager
+    command: >
+      bash -c "
+        mkdir -p /tmp/flink-checkpoints &&
+        /docker-entrypoint.sh taskmanager
+      "
+    deploy:
+      replicas: 2
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: jobmanager
+        taskmanager.numberOfTaskSlots: 4
+        taskmanager.memory.process.size: 2048m
+        taskmanager.memory.flink.size: 1536m
+    networks:
+      - demo-network
+
+  # Flink SQL Gateway - REST endpoint for dbt-flink-adapter
+  sql-gateway:
+    image: flink:1.20-java11
+    hostname: sql-gateway
+    container_name: demo-sql-gateway
+    depends_on:
+      - jobmanager
+    ports:
+      - "28083:8083"
+    command: >
+      bash -c "
+        /opt/flink/bin/sql-gateway.sh start-foreground
+        -Dsql-gateway.endpoint.rest.address=0.0.0.0
+        -Dsql-gateway.endpoint.rest.port=8083
+      "
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: jobmanager
+        rest.address: jobmanager
+        rest.port: 8081
+        execution.runtime-mode: streaming
+        execution.checkpointing.interval: 10s
+        execution.checkpointing.mode: EXACTLY_ONCE
+    networks:
+      - demo-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083/info"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Kafka - KRaft mode (no ZooKeeper)
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    hostname: kafka
+    container_name: demo-kafka
+    ports:
+      - "29092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT'
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:29093,PLAINTEXT_HOST://localhost:9092'
+      KAFKA_LISTENERS: 'PLAINTEXT://kafka:29093,CONTROLLER://kafka:29094,PLAINTEXT_HOST://0.0.0.0:9092'
+      KAFKA_INTER_BROKER_LISTENER_NAME: 'PLAINTEXT'
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:29094'
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_LOG_DIRS: '/tmp/kraft-combined-logs'
+      CLUSTER_ID: 'NGRiYjM4ZDdhYTFlNDFkZG'
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks:
+      - demo-network
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # PostgreSQL - target database
+  postgres:
+    image: postgres:15-alpine
+    hostname: postgres
+    container_name: demo-postgres
+    ports:
+      - "25432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: demodb
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - demo-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Grafana - visualization
+  grafana:
+    image: grafana/grafana:11.4.0
+    hostname: grafana
+    container_name: demo-grafana
+    ports:
+      - "23000:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: "/var/lib/grafana/dashboards/mongo-pipeline.json"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana/dashboards:/var/lib/grafana/dashboards
+    networks:
+      - demo-network
+    depends_on:
+      - postgres
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  mongo-data:
+  kafka-data:
+  postgres-data:
+
+networks:
+  demo-network:
+    driver: bridge
