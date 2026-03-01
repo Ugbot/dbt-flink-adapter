@@ -305,9 +305,52 @@ class FlinkConnectionManager(SQLConnectionManager):
         )
 
     @classmethod
+    def _validate_session_alive(cls, session: Session) -> bool:
+        """Validate that a session is still alive on the SQL Gateway server.
+
+        Sends a heartbeat to the server to confirm the session handle
+        is still valid. This catches cases where the server restarted
+        or the session was cleaned up due to inactivity, even if the
+        local timestamp check passed.
+
+        Args:
+            session: Session to validate
+
+        Returns:
+            True if session is alive, False if expired or unreachable
+        """
+        try:
+            session.heartbeat()
+            logger.debug(
+                f"Session {session.session_handle} validated alive via heartbeat"
+            )
+            return True
+        except Exception as e:
+            logger.info(
+                f"Session {session.session_handle} is no longer valid: {e}"
+            )
+            return False
+
+    @classmethod
     def _read_session_handle(
         cls, credentials: FlinkCredentials, transport: Transport
     ) -> Optional[Session]:
+        """Read a stored session handle from disk and validate it.
+
+        Performs two-level validation:
+        1. Local timestamp check against session_idle_timeout_s
+        2. Server-side heartbeat to confirm the session is still alive
+
+        If the stored session fails either check, returns None so a
+        new session will be created.
+
+        Args:
+            credentials: Connection credentials with timeout config
+            transport: Transport for server communication
+
+        Returns:
+            Validated Session if alive, None otherwise
+        """
         if os.path.isfile(SESSION_FILE_PATH):
             with open(SESSION_FILE_PATH, "r+") as file:
                 session_file = yaml.safe_load(file)
@@ -318,19 +361,30 @@ class FlinkConnectionManager(SQLConnectionManager):
                 if (
                     datetime.now() - session_timestamp
                 ).total_seconds() > credentials.session_idle_timeout_s:
-                    logger.info("Stored session has timeout.")
+                    logger.info("Stored session has timed out (local check).")
                     return None
 
-                logger.info(
-                    f"Restored session from file. Session handle: {session_file['session_handle']}"
-                )
-
-                return Session(
+                session = Session(
                     transport=transport,
                     session_handle=session_file["session_handle"],
                     name=credentials.session_name,
                     api_version="v1",
                 )
+
+                # Server-side validation: confirm session is alive
+                if not cls._validate_session_alive(session):
+                    logger.info(
+                        "Stored session failed server-side validation, "
+                        "will create a new session."
+                    )
+                    return None
+
+                logger.info(
+                    f"Restored session from file. "
+                    f"Session handle: {session_file['session_handle']}"
+                )
+
+                return session
         return None
 
     @classmethod
