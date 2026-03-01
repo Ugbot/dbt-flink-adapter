@@ -33,7 +33,62 @@ SESSION_FILE_PATH = expanduser("~") + "/.dbt/flink-session.yml"
 class FlinkCredentials(Credentials):
     """
     Defines database specific credentials that get added to
-    profiles.yml to connect to new adapter
+    profiles.yml to connect to new adapter.
+
+    Supports two connection modes:
+
+    1. **Direct Flink SQL Gateway** (default):
+       Connects directly to a Flink SQL Gateway REST API.
+       Requires: host, port, session_name.
+
+    2. **Ververica Cloud**:
+       Connects via Ververica Cloud and enables deployment management.
+       Requires: host, port, session_name + vvc_* fields.
+
+    Ververica Cloud fields (all optional, only needed for VVC mode):
+        vvc_gateway_url: Ververica Cloud API base URL
+            (e.g., 'https://cloud.ververica.com')
+        vvc_workspace_id: Workspace UUID from VVC console
+        vvc_namespace: VVC namespace for deployments (default: 'default')
+        vvc_api_key: API key for VVC authentication (preferred for CI/CD).
+            Mutually exclusive with vvc_email/vvc_password.
+        vvc_email: Email for VVC authentication (interactive use).
+            Used with vvc_password. Credentials stored in OS keyring.
+        vvc_password: Password for VVC authentication.
+            Used with vvc_email. Never logged or stored in plaintext.
+        vvc_engine_version: Flink engine version for deployments
+            (e.g., 'vera-4.0.0-flink-1.20')
+
+    Example profiles.yml (direct mode):
+
+        my_flink_project:
+          target: dev
+          outputs:
+            dev:
+              type: flink
+              host: localhost
+              port: 8083
+              database: default_catalog
+              schema: default_database
+              session_name: dbt_session
+
+    Example profiles.yml (Ververica Cloud):
+
+        my_flink_project:
+          target: vvc
+          outputs:
+            vvc:
+              type: flink
+              host: gateway.ververica.cloud
+              port: 443
+              database: default_catalog
+              schema: default_database
+              session_name: dbt_session
+              vvc_gateway_url: https://cloud.ververica.com
+              vvc_workspace_id: 12345678-abcd-efgh-ijkl-123456789abc
+              vvc_namespace: production
+              vvc_api_key: "{{ env_var('VVC_API_KEY') }}"
+              vvc_engine_version: vera-4.0.0-flink-1.20
     """
 
     host: str
@@ -42,6 +97,15 @@ class FlinkCredentials(Credentials):
     session_idle_timeout_s: int = 10 * 60
     heartbeat_enabled: bool = True
     heartbeat_interval_s: int = 60
+
+    # Ververica Cloud integration fields (all optional)
+    vvc_gateway_url: Optional[str] = None
+    vvc_workspace_id: Optional[str] = None
+    vvc_namespace: Optional[str] = "default"
+    vvc_api_key: Optional[str] = None
+    vvc_email: Optional[str] = None
+    vvc_password: Optional[str] = None
+    vvc_engine_version: Optional[str] = "vera-4.0.0-flink-1.20"
 
     _ALIASES = {"session": "session_name"}
 
@@ -54,9 +118,52 @@ class FlinkCredentials(Credentials):
     def unique_field(self) -> str:
         """
         Hashed and included in anonymous telemetry to track adapter adoption.
-        Pick a field that can uniquely identify one team/organization building with this adapter
+        Pick a field that can uniquely identify one team/organization building with this adapter.
         """
         return self.host
+
+    @property
+    def is_vvc_enabled(self) -> bool:
+        """Check if Ververica Cloud integration is configured.
+
+        Returns True if at minimum the gateway URL and workspace ID
+        are provided.
+        """
+        return bool(self.vvc_gateway_url and self.vvc_workspace_id)
+
+    def validate_vvc_credentials(self) -> None:
+        """Validate Ververica Cloud credential configuration.
+
+        Ensures that either API key or email/password is provided,
+        but not both. Called during connection open when VVC is enabled.
+
+        Raises:
+            dbt_common.exceptions.DbtRuntimeError: If VVC config is invalid
+        """
+        if not self.is_vvc_enabled:
+            return
+
+        has_api_key = bool(self.vvc_api_key)
+        has_email_password = bool(self.vvc_email and self.vvc_password)
+
+        if not has_api_key and not has_email_password:
+            raise dbt_common.exceptions.DbtRuntimeError(
+                "Ververica Cloud credentials are incomplete. "
+                "Provide either 'vvc_api_key' or both 'vvc_email' and 'vvc_password' "
+                "in your profiles.yml."
+            )
+
+        if has_api_key and has_email_password:
+            raise dbt_common.exceptions.DbtRuntimeError(
+                "Ververica Cloud credentials are ambiguous. "
+                "Provide either 'vvc_api_key' OR 'vvc_email'/'vvc_password', not both."
+            )
+
+        if self.vvc_email and not self.vvc_password:
+            raise dbt_common.exceptions.DbtRuntimeError(
+                "Ververica Cloud 'vvc_email' is set but 'vvc_password' is missing. "
+                "Both are required for email/password authentication."
+            )
 
     def _connection_keys(self) -> Tuple[str, ...]:
         """
@@ -66,8 +173,21 @@ class FlinkCredentials(Credentials):
         Must include 'database' and 'schema' so that `target.database`
         and `target.schema` resolve correctly in macros like
         `generate_schema_name` and `generate_database_name`.
+
+        VVC fields are included when VVC integration is configured,
+        but sensitive fields (api_key, password) are excluded.
         """
-        return "host", "port", "database", "schema", "session_name"
+        keys = ("host", "port", "database", "schema", "session_name")
+
+        if self.is_vvc_enabled:
+            keys = keys + (
+                "vvc_gateway_url",
+                "vvc_workspace_id",
+                "vvc_namespace",
+                "vvc_engine_version",
+            )
+
+        return keys
 
 
 class FlinkConnectionManager(SQLConnectionManager):
@@ -129,6 +249,10 @@ class FlinkConnectionManager(SQLConnectionManager):
             return connection
 
         credentials: FlinkCredentials = connection.credentials
+
+        # Validate VVC credentials if VVC integration is configured
+        credentials.validate_vvc_credentials()
+
         try:
             transport = cls._get_transport(credentials)
 

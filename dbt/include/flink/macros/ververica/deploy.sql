@@ -5,13 +5,16 @@
   using `dbt run-operation`.
 
   Prerequisites:
-    - Ververica Cloud credentials configured (API key or email/password)
-    - Workspace ID and namespace configured in profiles.yml
+    - Ververica Cloud credentials configured in profiles.yml
+      (vvc_gateway_url, vvc_workspace_id, and either vvc_api_key
+       or vvc_email/vvc_password)
 
   Usage:
     dbt run-operation vvc_deploy --args '{"model_name": "my_streaming_model"}'
     dbt run-operation vvc_status --args '{"deployment_id": "abc-123"}'
     dbt run-operation vvc_stop --args '{"deployment_id": "abc-123"}'
+    dbt run-operation vvc_start --args '{"deployment_id": "abc-123"}'
+    dbt run-operation vvc_list
 #}
 
 
@@ -21,8 +24,9 @@
 
     This macro:
     1. Reads the compiled SQL from dbt's target/compiled directory
-    2. Creates or updates a deployment in Ververica Cloud
-    3. Starts the deployment
+    2. Processes SQL (extracts hints, generates SET statements, cleans syntax)
+    3. Creates a SQLSCRIPT deployment in Ververica Cloud
+    4. Returns the deployment ID and status
 
     Args:
         model_name (str): Name of the dbt model to deploy
@@ -40,24 +44,20 @@
         }'
   #}
 
-  {{ log("VVC Deploy: Deploying model '" ~ model_name ~ "' to Ververica Cloud", info=true) }}
-  {{ log("NOTE: VVC deployment requires the adapter's Ververica integration to be configured in profiles.yml", info=true) }}
-  {{ log("See: dbt/adapters/flink/ververica/ for the Python client implementation", info=true) }}
+  {% set deps = additional_dependencies if additional_dependencies is not none else [] %}
 
-  {# This macro serves as the interface definition. The actual deployment
-     is handled by the VervericaClient Python class in
-     dbt/adapters/flink/ververica/client.py
+  {% set result = adapter.vvc_deploy_model(
+    model_name=model_name,
+    namespace=namespace,
+    engine_version=engine_version,
+    parallelism=parallelism,
+    execution_mode=execution_mode,
+    additional_dependencies=deps
+  ) %}
 
-     To use VVC deployment programmatically, use the adapter's Python API:
-
-     from dbt.adapters.flink.ververica import VervericaClient, DeploymentSpec, AuthManager
-
-     auth = AuthManager(gateway_url)
-     token = auth.get_valid_token(email, password)
-     client = VervericaClient(gateway_url, workspace_id, token)
-     spec = DeploymentSpec(name=model_name, namespace=namespace, sql_script=compiled_sql)
-     status = client.create_sqlscript_deployment(spec)
-  #}
+  {{ log("VVC Deploy: '" ~ model_name ~ "' deployed successfully", info=true) }}
+  {{ log("  Deployment ID: " ~ result.deployment_id, info=true) }}
+  {{ log("  State: " ~ result.state, info=true) }}
 
 {% endmacro %}
 
@@ -74,8 +74,14 @@
         dbt run-operation vvc_status --args '{"deployment_id": "abc-123-def"}'
   #}
 
-  {{ log("VVC Status: Checking deployment " ~ deployment_id, info=true) }}
-  {{ log("NOTE: Use the VervericaClient Python API for programmatic access", info=true) }}
+  {% set result = adapter.vvc_get_deployment_status(deployment_id=deployment_id) %}
+
+  {{ log("VVC Status: " ~ result.name, info=true) }}
+  {{ log("  Deployment ID: " ~ result.deployment_id, info=true) }}
+  {{ log("  State: " ~ result.state, info=true) }}
+  {% if result.job_id %}
+  {{ log("  Job ID: " ~ result.job_id, info=true) }}
+  {% endif %}
 
 {% endmacro %}
 
@@ -96,8 +102,14 @@
         dbt run-operation vvc_stop --args '{"deployment_id": "abc-123", "stop_strategy": "STOP_WITH_SAVEPOINT"}'
   #}
 
-  {{ log("VVC Stop: Stopping deployment " ~ deployment_id ~ " (strategy: " ~ stop_strategy ~ ")", info=true) }}
-  {{ log("NOTE: Use the VervericaClient Python API for programmatic access", info=true) }}
+  {% set result = adapter.vvc_stop_deployment(
+    deployment_id=deployment_id,
+    stop_strategy=stop_strategy
+  ) %}
+
+  {{ log("VVC Stop: " ~ result.name ~ " stop requested (strategy: " ~ stop_strategy ~ ")", info=true) }}
+  {{ log("  Deployment ID: " ~ result.deployment_id, info=true) }}
+  {{ log("  State: " ~ result.state, info=true) }}
 
 {% endmacro %}
 
@@ -118,8 +130,14 @@
         dbt run-operation vvc_start --args '{"deployment_id": "abc-123", "restore_strategy": "LATEST_SAVEPOINT"}'
   #}
 
-  {{ log("VVC Start: Starting deployment " ~ deployment_id ~ " (restore: " ~ restore_strategy ~ ")", info=true) }}
-  {{ log("NOTE: Use the VervericaClient Python API for programmatic access", info=true) }}
+  {% set result = adapter.vvc_start_deployment(
+    deployment_id=deployment_id,
+    restore_strategy=restore_strategy
+  ) %}
+
+  {{ log("VVC Start: " ~ result.name ~ " start requested (restore: " ~ restore_strategy ~ ")", info=true) }}
+  {{ log("  Deployment ID: " ~ result.deployment_id, info=true) }}
+  {{ log("  State: " ~ result.state, info=true) }}
 
 {% endmacro %}
 
@@ -135,7 +153,11 @@
         dbt run-operation vvc_list
   #}
 
-  {{ log("VVC List: Listing deployments", info=true) }}
-  {{ log("NOTE: Use the VervericaClient Python API for programmatic access", info=true) }}
+  {% set deployments = adapter.vvc_list_deployments(namespace=namespace) %}
+
+  {{ log("VVC Deployments (" ~ deployments | length ~ " found):", info=true) }}
+  {% for d in deployments %}
+  {{ log("  " ~ d.name ~ " [" ~ d.state ~ "] (ID: " ~ d.deployment_id ~ ")", info=true) }}
+  {% endfor %}
 
 {% endmacro %}

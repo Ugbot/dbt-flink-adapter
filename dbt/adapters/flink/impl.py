@@ -597,6 +597,301 @@ class FlinkAdapter(BaseAdapter):
                 f"Original error: {e}"
             ) from e
 
+    # =========================================================================
+    # Ververica Cloud Deployment Methods
+    # =========================================================================
+
+    def _get_vvc_credentials(self) -> "FlinkCredentials":
+        """Get and validate VVC credentials from the current connection profile.
+
+        Returns:
+            FlinkCredentials with VVC fields populated
+
+        Raises:
+            DbtRuntimeError: If VVC is not configured or credentials are invalid
+        """
+        from dbt.adapters.flink.connections import FlinkCredentials
+
+        credentials: FlinkCredentials = self.config.credentials
+        if not credentials.is_vvc_enabled:
+            raise dbt_common.exceptions.DbtRuntimeError(
+                "Ververica Cloud is not configured. "
+                "Set 'vvc_gateway_url' and 'vvc_workspace_id' in profiles.yml."
+            )
+        credentials.validate_vvc_credentials()
+        return credentials
+
+    def _get_vvc_client(self) -> "VervericaClient":
+        """Create an authenticated VervericaClient from profile credentials.
+
+        Handles both API key and email/password authentication flows.
+
+        Returns:
+            Authenticated VervericaClient instance
+
+        Raises:
+            DbtRuntimeError: If VVC is not configured or authentication fails
+        """
+        from dbt.adapters.flink.ververica import (
+            VervericaClient, AuthManager, AuthToken,
+        )
+        from datetime import datetime, timedelta, timezone
+
+        credentials = self._get_vvc_credentials()
+
+        # Authenticate based on credential type
+        if credentials.vvc_api_key:
+            # API key auth: create a long-lived token directly
+            # VVC API keys are passed as Bearer tokens
+            auth_token = AuthToken(
+                access_token=credentials.vvc_api_key,
+                expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+                token_type="Bearer",
+            )
+        else:
+            # Email/password auth via AuthManager
+            auth_manager = AuthManager(credentials.vvc_gateway_url)
+            auth_token = auth_manager.get_valid_token(
+                email=credentials.vvc_email,
+                password=credentials.vvc_password,
+            )
+
+        return VervericaClient(
+            gateway_url=credentials.vvc_gateway_url,
+            workspace_id=credentials.vvc_workspace_id,
+            auth_token=auth_token,
+        )
+
+    @available
+    def vvc_deploy_model(
+        self,
+        model_name: str,
+        namespace: Optional[str] = None,
+        engine_version: Optional[str] = None,
+        parallelism: int = 1,
+        execution_mode: str = "STREAMING",
+        additional_dependencies: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Deploy a compiled dbt model to Ververica Cloud.
+
+        Reads the compiled SQL from dbt's target/compiled directory,
+        processes it (extracting hints, generating SET statements),
+        and creates a SQLSCRIPT deployment in Ververica Cloud.
+
+        Args:
+            model_name: Name of the dbt model to deploy
+            namespace: VVC namespace (defaults to profile config)
+            engine_version: Flink engine version (defaults to profile config)
+            parallelism: Job parallelism (default: 1)
+            execution_mode: 'STREAMING' or 'BATCH' (default: 'STREAMING')
+            additional_dependencies: JAR URIs for connector dependencies
+
+        Returns:
+            Dict with deployment_id, name, and state
+
+        Raises:
+            DbtRuntimeError: If VVC is not configured, auth fails, or deploy fails
+        """
+        from dbt.adapters.flink.ververica import (
+            VervericaClient, DeploymentSpec, SqlProcessor, DbtArtifactReader,
+        )
+        from pathlib import Path
+
+        credentials = self._get_vvc_credentials()
+        ns = namespace or credentials.vvc_namespace or "default"
+        version = engine_version or credentials.vvc_engine_version or "vera-4.0.0-flink-1.20"
+
+        # Find and process compiled SQL
+        project_dir = Path(self.config.project_root)
+        reader = DbtArtifactReader(project_dir)
+
+        compiled_models = reader.find_compiled_models(models=[model_name])
+        if not compiled_models:
+            raise dbt_common.exceptions.DbtRuntimeError(
+                f"No compiled SQL found for model '{model_name}'. "
+                f"Run 'dbt compile --select {model_name}' first."
+            )
+
+        # Process SQL (extract hints, generate SET statements)
+        processor = SqlProcessor(
+            strip_hints=True,
+            generate_set_statements=True,
+            include_drop_statements=True,
+        )
+        compiled_model = compiled_models[0]
+        processed = processor.process_sql(compiled_model.sql)
+
+        # Merge additional dependencies from hints with explicit deps
+        all_deps = list(additional_dependencies or [])
+        all_deps.extend(processed.additional_dependencies)
+
+        # Build deployment spec
+        spec = DeploymentSpec(
+            name=model_name,
+            namespace=ns,
+            sql_script=processed.final_sql,
+            engine_version=version,
+            parallelism=parallelism,
+            execution_mode=execution_mode,
+            additional_dependencies=all_deps,
+        )
+
+        # Deploy via VVC client
+        try:
+            client = self._get_vvc_client()
+            with client:
+                status = client.create_sqlscript_deployment(spec)
+
+            logger.info(
+                f"VVC Deploy: '{model_name}' deployed as {status.deployment_id} "
+                f"(state: {status.state})"
+            )
+
+            return {
+                "deployment_id": status.deployment_id,
+                "name": status.name,
+                "state": status.state,
+            }
+
+        except Exception as e:
+            raise dbt_common.exceptions.DbtRuntimeError(
+                f"Failed to deploy model '{model_name}' to Ververica Cloud: {e}"
+            ) from e
+
+    @available
+    def vvc_get_deployment_status(self, deployment_id: str) -> Dict[str, Any]:
+        """Get the status of a Ververica Cloud deployment.
+
+        Args:
+            deployment_id: Deployment ID (UUID)
+
+        Returns:
+            Dict with deployment_id, name, state, job_id
+
+        Raises:
+            DbtRuntimeError: If VVC is not configured or request fails
+        """
+        try:
+            client = self._get_vvc_client()
+            with client:
+                status = client.get_deployment(deployment_id)
+
+            return {
+                "deployment_id": status.deployment_id,
+                "name": status.name,
+                "state": status.state,
+                "job_id": status.job_id,
+            }
+
+        except Exception as e:
+            raise dbt_common.exceptions.DbtRuntimeError(
+                f"Failed to get status for deployment {deployment_id}: {e}"
+            ) from e
+
+    @available
+    def vvc_stop_deployment(
+        self,
+        deployment_id: str,
+        stop_strategy: str = "NONE",
+    ) -> Dict[str, Any]:
+        """Stop a running Ververica Cloud deployment.
+
+        Args:
+            deployment_id: Deployment ID (UUID)
+            stop_strategy: 'NONE' (cancel), 'STOP_WITH_SAVEPOINT', or 'STOP_WITH_DRAIN'
+
+        Returns:
+            Dict with deployment_id and state after stop request
+
+        Raises:
+            DbtRuntimeError: If VVC is not configured or request fails
+        """
+        try:
+            client = self._get_vvc_client()
+            with client:
+                status = client.stop_job(deployment_id)
+
+            return {
+                "deployment_id": status.deployment_id,
+                "name": status.name,
+                "state": status.state,
+            }
+
+        except Exception as e:
+            raise dbt_common.exceptions.DbtRuntimeError(
+                f"Failed to stop deployment {deployment_id}: {e}"
+            ) from e
+
+    @available
+    def vvc_start_deployment(
+        self,
+        deployment_id: str,
+        restore_strategy: str = "NONE",
+    ) -> Dict[str, Any]:
+        """Start a stopped Ververica Cloud deployment.
+
+        Args:
+            deployment_id: Deployment ID (UUID)
+            restore_strategy: 'NONE', 'LATEST_STATE', or 'LATEST_SAVEPOINT'
+
+        Returns:
+            Dict with deployment_id and state after start request
+
+        Raises:
+            DbtRuntimeError: If VVC is not configured or request fails
+        """
+        try:
+            client = self._get_vvc_client()
+            with client:
+                status = client.start_deployment(deployment_id)
+
+            return {
+                "deployment_id": status.deployment_id,
+                "name": status.name,
+                "state": status.state,
+            }
+
+        except Exception as e:
+            raise dbt_common.exceptions.DbtRuntimeError(
+                f"Failed to start deployment {deployment_id}: {e}"
+            ) from e
+
+    @available
+    def vvc_list_deployments(self, namespace: Optional[str] = None) -> List[Dict[str, Any]]:
+        """List all deployments in a Ververica Cloud namespace.
+
+        Args:
+            namespace: VVC namespace (defaults to profile config)
+
+        Returns:
+            List of dicts with deployment_id, name, state for each deployment
+
+        Raises:
+            DbtRuntimeError: If VVC is not configured or request fails
+        """
+        credentials = self._get_vvc_credentials()
+        ns = namespace or credentials.vvc_namespace or "default"
+
+        try:
+            client = self._get_vvc_client()
+            with client:
+                deployments = client.list_deployments(ns)
+
+            return [
+                {
+                    "deployment_id": d.deployment_id,
+                    "name": d.name,
+                    "state": d.state,
+                    "job_id": d.job_id,
+                }
+                for d in deployments
+            ]
+
+        except Exception as e:
+            raise dbt_common.exceptions.DbtRuntimeError(
+                f"Failed to list deployments in namespace '{ns}': {e}"
+            ) from e
+
     @available.parse(lambda *a, **k: (None, None))
     def add_query(
         self,
