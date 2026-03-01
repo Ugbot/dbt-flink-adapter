@@ -1,6 +1,7 @@
 from typing import List, Optional, Any, Tuple, Dict, Type, Union
 
 import agate
+import dbt_common.exceptions
 
 # dbt-core 1.8+ imports (adapter decoupling)
 from dbt.adapters.base import (
@@ -295,42 +296,54 @@ class FlinkAdapter(BaseAdapter):
         """
         List all relations in a schema without using dbt's cache.
 
-        Uses SHOW TABLES to get the list of tables in the schema.
+        Calls both SHOW TABLES and SHOW VIEWS to properly distinguish
+        between table and view relation types. This is important for
+        dbt-core to correctly handle DROP VIEW vs DROP TABLE.
+
+        Args:
+            schema_relation: Relation with database/schema context
+
+        Returns:
+            List of BaseRelation objects with correct type (table or view)
         """
+        database = schema_relation.database or 'default_catalog'
+        schema = schema_relation.schema or 'default_database'
+
+        relations: List[BaseRelation] = []
+
+        # Get tables
         try:
-            # Execute SHOW TABLES to get list of tables in the schema
             results = self.execute_macro(
                 'flink__list_relations_without_caching',
                 kwargs={'schema_relation': schema_relation}
             )
 
-            relations = []
+            # Collect view names for type distinction
+            view_names = set(self.list_views_in_schema(schema))
+
             for row in results:
-                # SHOW TABLES returns table name
-                # Handle agate.Row objects
                 if hasattr(row, '__iter__') and not isinstance(row, str):
-                    # It's an iterable (tuple, list, or agate.Row)
                     table_name = str(list(row)[0]) if len(list(row)) > 0 else None
                 else:
-                    # It's a string or other single value
                     table_name = str(row)
 
                 if table_name:
-                    # Create a relation object for this table
-                    # Use the connection's default database/schema if not specified
-                    database = schema_relation.database or 'default_catalog'
-                    schema = schema_relation.schema or 'default_database'
+                    # Determine type based on whether it appears in SHOW VIEWS
+                    rel_type = 'view' if table_name in view_names else 'table'
 
                     relations.append(self.Relation.create(
                         database=database,
                         schema=schema,
-                        identifier=table_name
+                        identifier=table_name,
+                        type=rel_type,
                     ))
 
-            return relations
         except Exception as e:
-            # If SHOW TABLES fails, return empty list (schema might not exist yet)
-            return []
+            logger.debug(
+                f"Could not list relations for {schema_relation}: {e}"
+            )
+
+        return relations
 
     def get_relation(self, database: str, schema: str, identifier: str) -> Optional[BaseRelation]:
         """
@@ -526,18 +539,42 @@ class FlinkAdapter(BaseAdapter):
         return False
 
     def rename_relation(self, from_relation: BaseRelation, to_relation: BaseRelation) -> None:
-        # Flink SQL does not support RENAME TABLE
-        pass
+        """
+        Rename a relation. NOT SUPPORTED in Flink SQL.
+
+        Flink SQL does not support ALTER TABLE ... RENAME TO.
+        This method raises an error rather than silently doing nothing,
+        since silent failure could lead to data loss if dbt-core expects
+        the rename to have succeeded.
+
+        Args:
+            from_relation: Source relation
+            to_relation: Target relation name
+
+        Raises:
+            DbtRuntimeError: Always, since Flink does not support rename
+        """
+        raise dbt_common.exceptions.DbtRuntimeError(
+            f"RENAME RELATION is not supported by Flink SQL. "
+            f"Cannot rename {from_relation} to {to_relation}. "
+            f"Use DROP + CREATE instead, or run with --full-refresh."
+        )
 
     def truncate_relation(self, relation: BaseRelation) -> None:
         """
         Truncate a table in Flink (delete all rows).
 
-        Note: Flink doesn't have a native TRUNCATE command, so we use DELETE.
-        For streaming tables, this may not be supported.
+        Flink SQL does not have a native TRUNCATE command. Uses DELETE FROM,
+        which is supported by Flink 2.0+ for some connectors (JDBC, Paimon).
+
+        For connectors that do not support DELETE (Kafka, datagen, filesystem),
+        this raises a clear error rather than silently failing.
 
         Args:
             relation: BaseRelation to truncate
+
+        Raises:
+            DbtRuntimeError: If DELETE is not supported by the connector
         """
         # Build qualified name
         if relation.schema:
@@ -548,18 +585,17 @@ class FlinkAdapter(BaseAdapter):
         else:
             qualified_name = relation.identifier
 
-        # Flink doesn't have TRUNCATE, use DELETE FROM
-        # Note: This may not work for all connectors (e.g., streaming sources)
         try:
             sql = f"DELETE FROM {qualified_name}"
             self.add_query(sql, auto_begin=False)
         except Exception as e:
-            # If DELETE fails (not supported), try DROP and recreate
-            # This is a fallback that won't preserve the table structure
-            logger.warning(
-                f"Could not truncate relation {relation}: {e}. "
-                f"DELETE not supported for this connector."
-            )
+            raise dbt_common.exceptions.DbtRuntimeError(
+                f"Could not truncate relation {relation}. "
+                f"Flink does not have a native TRUNCATE command and DELETE FROM "
+                f"is not supported by all connectors. "
+                f"Consider using --full-refresh instead. "
+                f"Original error: {e}"
+            ) from e
 
     @available.parse(lambda *a, **k: (None, None))
     def add_query(

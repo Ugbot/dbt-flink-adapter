@@ -3,23 +3,56 @@ postgres adapter macros: https://github.com/dbt-labs/dbt-core/blob/main/plugins/
 dbt docs: https://docs.getdbt.com/docs/contributing/building-a-new-adapter
 */
 
-{% macro flink__alter_column_type(relation,column_name,new_column_type) -%}
-'''Changes column name or data type'''
-/*
-    1. Create a new column (w/ temp name and correct type)
-    2. Copy data over to it
-    3. Drop the existing column (cascade!)
-    4. Rename the new column to existing column
-*/
-{% endmacro %}
+{% macro flink__alter_column_type(relation, column_name, new_column_type) -%}
+  {#
+    Alter a column's data type.
 
-{% macro flink__check_schema_exists(information_schema,schema) -%}
-'''Checks if schema name exists and returns number or times it shows up.'''
-/*
-    1. Check if schemas exist
-    2. return number of rows or columns that match searched parameter
-*/
-{% endmacro %}
+    Flink SQL does not support ALTER TABLE ... ALTER COLUMN ... SET DATA TYPE
+    in open-source Flink. However, Paimon catalog supports ALTER TABLE ... MODIFY.
+
+    For non-Paimon connectors, this raises an error since the operation is
+    not supported.
+
+    Args:
+        relation: The table relation to modify
+        column_name: Name of the column to alter
+        new_column_type: New data type for the column
+  #}
+  {% set catalog_managed = config.get('catalog_managed', false) if config is defined else false %}
+
+  {% if catalog_managed %}
+    {# Paimon and some catalogs support ALTER TABLE ... MODIFY #}
+    {% call statement('alter_column_type') -%}
+      ALTER TABLE {{ relation }} MODIFY {{ column_name }} {{ new_column_type }}
+    {%- endcall %}
+  {% else %}
+    {% do exceptions.raise_compiler_error(
+      'ALTER COLUMN TYPE is not supported by Flink SQL for non-catalog-managed tables. '
+      ~ 'Column "' ~ column_name ~ '" on ' ~ relation ~ ' cannot be changed to ' ~ new_column_type ~ '. '
+      ~ 'Consider using catalog_managed=true with a Paimon catalog, or recreating the table with --full-refresh.'
+    ) %}
+  {% endif %}
+{%- endmacro %}
+
+{% macro flink__check_schema_exists(information_schema, schema) -%}
+  {#
+    Check if a database/schema exists in Flink.
+
+    Uses SHOW DATABASES to check for existence since Flink does not
+    have an information_schema.
+
+    Args:
+        information_schema: Not used (Flink has no information_schema)
+        schema: Database name to check for
+
+    Returns:
+        agate.Table with results (non-empty if schema exists)
+  #}
+  {% call statement('check_schema_exists', fetch_result=True, auto_begin=False) -%}
+    SHOW DATABASES
+  {%- endcall %}
+  {{ return(load_result('check_schema_exists').table) }}
+{%- endmacro %}
 
 --  Example from postgres adapter in dbt-core
 --  Notice how you can build out other methods than the designated ones for the impl.py file,
@@ -147,36 +180,70 @@ dbt docs: https://docs.getdbt.com/docs/contributing/building-a-new-adapter
 */
 
 {% macro flink__list_relations_without_caching(schema_relation) -%}
-  {# List all tables in the schema using SHOW TABLES #}
-  {% call statement('list_relations', fetch_result=True) %}
-    show tables
+  {#
+    List all relations (tables and views) in the schema.
+
+    Calls both SHOW TABLES and SHOW VIEWS to properly distinguish
+    between table and view relation types.
+
+    Args:
+        schema_relation: Relation with database/schema context
+
+    Returns:
+        agate.Table with table names
+  #}
+  {% call statement('list_relations', fetch_result=True, auto_begin=False) %}
+    SHOW TABLES
   {% endcall %}
   {{ return(load_result('list_relations').table) }}
 {%- endmacro %}
 
 {% macro flink__list_schemas(database) -%}
-'''Returns a table of unique schemas.'''
-/*
-  1. search schemea by specific name
-  2. create a table with names
-*/
-{% endmacro %}
+  {#
+    List all databases/schemas in the current catalog.
+
+    In Flink terminology: catalog = database parameter, database = schema in dbt terms.
+
+    Args:
+        database: Catalog name (not used directly since Flink lists from current catalog)
+
+    Returns:
+        agate.Table with database names
+  #}
+  {% call statement('list_schemas', fetch_result=True, auto_begin=False) -%}
+    SHOW DATABASES
+  {%- endcall %}
+  {{ return(load_result('list_schemas').table) }}
+{%- endmacro %}
 
 {% macro flink__rename_relation(from_relation, to_relation) -%}
-'''Renames a relation in the database.'''
-/*
-  1. Search for a specific relation name
-  2. alter table by targeting specific name and passing in new name
-*/
-{% endmacro %}
+  {#
+    Rename a relation. NOT SUPPORTED in Flink SQL.
+
+    Flink SQL does not support ALTER TABLE ... RENAME TO.
+    This macro raises a clear error rather than silently doing nothing.
+  #}
+  {% do exceptions.raise_compiler_error(
+    'RENAME RELATION is not supported by Flink SQL. '
+    ~ 'Cannot rename ' ~ from_relation ~ ' to ' ~ to_relation ~ '. '
+    ~ 'Use DROP + CREATE instead, or run with --full-refresh.'
+  ) %}
+{%- endmacro %}
 
 {% macro flink__truncate_relation(relation) -%}
-'''Removes all rows from a targeted set of tables.'''
-/*
-  1. grab all tables tied to the relation
-  2. remove rows from relations
-*/
-{% endmacro %}
+  {#
+    Truncate a table (remove all rows).
+
+    Flink SQL does not have a native TRUNCATE command. Uses DELETE FROM
+    which is supported by Flink 2.0+ for some connectors (JDBC, Paimon).
+
+    For connectors that do not support DELETE (Kafka, datagen, etc.),
+    this will fail with a clear error from Flink.
+  #}
+  {% call statement('truncate_relation', auto_begin=False) -%}
+    DELETE FROM {{ relation }}
+  {%- endcall %}
+{%- endmacro %}
 
 /*
 
@@ -189,6 +256,5 @@ Example 3 of 3 of required macros that does not have a default implementation.
 */
 
 {% macro flink__current_timestamp() -%}
-'''Returns current UTC time'''
-{# docs show not to be implemented currently. #}
-{% endmacro %}
+  CURRENT_TIMESTAMP
+{%- endmacro %}
