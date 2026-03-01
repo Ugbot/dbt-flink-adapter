@@ -661,6 +661,7 @@ Long-running dbt sessions may time out. Rerun `bash run_dbt.sh` to create a new 
 
 ## Next Steps
 
+- [MongoDB Atlas + Ververica Cloud](./mongodb-atlas-ververica-tutorial.md) -- Deploy this pipeline to managed cloud infrastructure
 - [CDC Sources](./cdc-sources.md) -- CDC connector reference for MySQL, PostgreSQL, MongoDB, and more
 - [Streaming Pipelines](./streaming-pipelines.md) -- Watermarks, windows, and advanced streaming patterns
 - [Workflow Tutorial](./workflow-tutorial.md) -- One-command compile, transform, deploy, and start

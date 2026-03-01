@@ -91,6 +91,7 @@ Choose the path that matches your goal:
 - [Sources and Connectors](guides/sources-and-connectors.md) -- Source definitions, column types, connector configuration
 - [CDC Sources](guides/cdc-sources.md) -- Change Data Capture with MySQL, PostgreSQL, MongoDB, and more
 - [MongoDB CDC Tutorial](guides/mongodb-cdc-tutorial.md) -- End-to-end CDC pipeline: MongoDB → Kafka → PostgreSQL with Grafana
+- [MongoDB Atlas + Ververica Cloud](guides/mongodb-atlas-ververica-tutorial.md) -- Deploy Atlas CDC pipelines to managed Flink on Ververica Cloud
 - [Flink Deployment](guides/ververica-deployment.md) -- Deploy to Ververica Cloud or local Flink clusters
 - [Workflow Tutorial](guides/workflow-tutorial.md) -- One-command deployment: compile, transform, deploy, and start
 - [CI/CD](guides/ci-cd.md) -- GitHub Actions workflows and multi-environment deployment

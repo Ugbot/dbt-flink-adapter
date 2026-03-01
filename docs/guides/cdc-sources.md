@@ -433,6 +433,7 @@ Ensure the correct CDC JAR version matches your Flink version. Flink 1.20 requir
 ## Next Steps
 
 - [MongoDB CDC Tutorial](./mongodb-cdc-tutorial.md) -- Build a complete MongoDB → Kafka → PostgreSQL pipeline
+- [MongoDB Atlas + Ververica Cloud](./mongodb-atlas-ververica-tutorial.md) -- Deploy Atlas CDC to managed Flink on Ververica Cloud
 - [Sources and Connectors](./sources-and-connectors.md) -- Full connector reference
 - [Streaming Pipelines](./streaming-pipelines.md) -- Building streaming pipelines with CDC sources
 - [Workflow Tutorial](./workflow-tutorial.md) -- Deploying pipelines to Ververica Cloud
