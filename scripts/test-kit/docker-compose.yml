@@ -1,9 +1,106 @@
 services:
+  # ---------------------------------------------------------------------------
+  # Object Storage: MinIO (S3-compatible)
+  # ---------------------------------------------------------------------------
+  minio:
+    image: minio/minio:latest
+    hostname: minio
+    container_name: tk-minio
+    ports:
+      - "19000:9000"   # S3 API
+      - "19001:9001"   # Console UI
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+    networks:
+      - flink-network
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # MinIO init: create the lakehouse bucket on startup
+  minio-init:
+    image: minio/mc:latest
+    container_name: tk-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+        mc alias set myminio http://minio:9000 minioadmin minioadmin &&
+        mc mb --ignore-existing myminio/lakehouse &&
+        mc mb --ignore-existing myminio/checkpoints &&
+        echo 'MinIO buckets created successfully'
+      "
+    networks:
+      - flink-network
+
+  # ---------------------------------------------------------------------------
+  # Metadata: Hive Metastore (for Iceberg hive catalog + Hudi sync)
+  # ---------------------------------------------------------------------------
+  hive-metastore:
+    image: apache/hive:4.0.1
+    hostname: hive-metastore
+    container_name: tk-hive-metastore
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "19083:9083"  # Thrift API
+    environment:
+      SERVICE_NAME: metastore
+      DB_DRIVER: postgres
+      SERVICE_OPTS: >-
+        -Djavax.jdo.option.ConnectionDriverName=org.postgresql.Driver
+        -Djavax.jdo.option.ConnectionURL=jdbc:postgresql://postgres:5432/metastore_db
+        -Djavax.jdo.option.ConnectionUserName=hive
+        -Djavax.jdo.option.ConnectionPassword=hive
+    volumes:
+      - hive-metastore-data:/opt/hive/data
+      - hms-pg-driver:/opt/hive/lib/postgres-driver
+    networks:
+      - flink-network
+    healthcheck:
+      test: ["CMD", "bash", "-c", "cat < /dev/null > /dev/tcp/localhost/9083"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # Nessie: Git-like catalog for Iceberg (optional)
+  # ---------------------------------------------------------------------------
+  nessie:
+    image: ghcr.io/projectnessie/nessie:latest
+    hostname: nessie
+    container_name: tk-nessie
+    ports:
+      - "19120:19120"
+    networks:
+      - flink-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:19120/api/v2/config"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - nessie
+
+  # ---------------------------------------------------------------------------
   # Flink JobManager
+  # ---------------------------------------------------------------------------
   jobmanager:
     image: flink:1.20-java11
     hostname: jobmanager
     container_name: flink-jobmanager
+    depends_on:
+      minio:
+        condition: service_healthy
     ports:
       - "18081:8081"  # Web UI
       - "16123:6123"  # RPC
@@ -22,13 +119,20 @@ services:
         execution.checkpointing.mode: EXACTLY_ONCE
         state.backend: hashmap
         state.checkpoints.dir: file:///tmp/flink-checkpoints
+        # S3 (MinIO) configuration
+        s3.endpoint: http://minio:9000
+        s3.path-style-access: true
+        s3.access-key: minioadmin
+        s3.secret-key: minioadmin
         # Enable SQL Gateway
         sql-gateway.endpoint.rest.address: 0.0.0.0
-        # Load CDC JARs from volume mount subdirectory
-        classloader.additional-classpaths: /opt/flink/lib/cdc/
+        # Load connector JARs from volume mount subdirectories
+        classloader.additional-classpaths: /opt/flink/lib/cdc/;/opt/flink/lib/lakehouse/
     volumes:
       - flink-checkpoints:/tmp/flink-checkpoints
       - cdc-connectors:/opt/flink/lib/cdc
+      - lakehouse-connectors:/opt/flink/lib/lakehouse
+      - s3-plugin:/opt/flink/plugins/s3-fs-hadoop
     networks:
       - flink-network
     healthcheck:
@@ -37,7 +141,9 @@ services:
       timeout: 5s
       retries: 10
 
+  # ---------------------------------------------------------------------------
   # Flink TaskManager
+  # ---------------------------------------------------------------------------
   taskmanager:
     image: flink:1.20-java11
     depends_on:
@@ -52,15 +158,24 @@ services:
         taskmanager.numberOfTaskSlots: 4
         taskmanager.memory.process.size: 2048m
         taskmanager.memory.flink.size: 1536m
-        # Load CDC JARs from volume mount subdirectory
-        classloader.additional-classpaths: /opt/flink/lib/cdc/
+        # S3 (MinIO) configuration
+        s3.endpoint: http://minio:9000
+        s3.path-style-access: true
+        s3.access-key: minioadmin
+        s3.secret-key: minioadmin
+        # Load connector JARs from volume mount subdirectories
+        classloader.additional-classpaths: /opt/flink/lib/cdc/;/opt/flink/lib/lakehouse/
     volumes:
       - flink-checkpoints:/tmp/flink-checkpoints
       - cdc-connectors:/opt/flink/lib/cdc
+      - lakehouse-connectors:/opt/flink/lib/lakehouse
+      - s3-plugin:/opt/flink/plugins/s3-fs-hadoop
     networks:
       - flink-network
 
+  # ---------------------------------------------------------------------------
   # Flink SQL Gateway
+  # ---------------------------------------------------------------------------
   sql-gateway:
     image: flink:1.20-java11
     hostname: sql-gateway
@@ -86,10 +201,17 @@ services:
         sql-gateway.endpoint.rest.port: 8083
         sql-gateway.session.idle-timeout: 30min
         sql-gateway.session.check-interval: 1min
-        # Load CDC JARs from volume mount subdirectory
-        classloader.additional-classpaths: /opt/flink/lib/cdc/
+        # S3 (MinIO) configuration
+        s3.endpoint: http://minio:9000
+        s3.path-style-access: true
+        s3.access-key: minioadmin
+        s3.secret-key: minioadmin
+        # Load connector JARs from volume mount subdirectories
+        classloader.additional-classpaths: /opt/flink/lib/cdc/;/opt/flink/lib/lakehouse/
     volumes:
       - cdc-connectors:/opt/flink/lib/cdc
+      - lakehouse-connectors:/opt/flink/lib/lakehouse
+      - s3-plugin:/opt/flink/plugins/s3-fs-hadoop
     networks:
       - flink-network
     healthcheck:
@@ -98,7 +220,9 @@ services:
       timeout: 5s
       retries: 5
 
-  # Kafka for streaming data
+  # ---------------------------------------------------------------------------
+  # Kafka (KRaft mode — no ZooKeeper)
+  # ---------------------------------------------------------------------------
   kafka:
     image: confluentinc/cp-kafka:7.6.0
     hostname: kafka
@@ -130,7 +254,9 @@ services:
       timeout: 5s
       retries: 5
 
-  # PostgreSQL for CDC testing
+  # ---------------------------------------------------------------------------
+  # PostgreSQL (CDC testing + Hive Metastore backend)
+  # ---------------------------------------------------------------------------
   postgres:
     image: postgres:15-alpine
     hostname: postgres
@@ -151,6 +277,7 @@ services:
       - "max_wal_senders=10"
     volumes:
       - postgres-data:/var/lib/postgresql/data
+      - ./init-scripts/postgres-init.sql:/docker-entrypoint-initdb.d/01-init-metastore.sql
     networks:
       - flink-network
     healthcheck:
@@ -159,7 +286,9 @@ services:
       timeout: 5s
       retries: 5
 
-  # MySQL for CDC testing
+  # ---------------------------------------------------------------------------
+  # MySQL (CDC testing)
+  # ---------------------------------------------------------------------------
   mysql:
     image: mysql:8.0
     hostname: mysql
@@ -189,7 +318,9 @@ services:
       timeout: 5s
       retries: 5
 
-  # Grafana for pipeline visualization
+  # ---------------------------------------------------------------------------
+  # Grafana (pipeline visualization)
+  # ---------------------------------------------------------------------------
   grafana:
     image: grafana/grafana:11.4.0
     hostname: grafana
@@ -214,7 +345,9 @@ services:
       timeout: 5s
       retries: 5
 
-  # Python environment for PyFlink jobs
+  # ---------------------------------------------------------------------------
+  # PyFlink environment
+  # ---------------------------------------------------------------------------
   pyflink:
     image: python:3.13-slim
     hostname: pyflink
@@ -242,7 +375,12 @@ volumes:
   kafka-data:
   postgres-data:
   mysql-data:
+  minio-data:
+  hive-metastore-data:
   cdc-connectors:
+  lakehouse-connectors:
+  s3-plugin:
+  hms-pg-driver:
 
 networks:
   flink-network:
