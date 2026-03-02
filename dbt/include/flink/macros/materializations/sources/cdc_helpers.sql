@@ -19,7 +19,7 @@
     table_name,
     server_id=none,
     startup_mode='initial',
-    extra={}
+    extra_properties={}
 ) %}
     {#
     Build a validated connector properties dict for mysql-cdc.
@@ -33,7 +33,7 @@
         table_name: Table to capture changes from (supports regex, e.g., 'orders|products')
         server_id: Server ID range for the CDC reader (e.g., '5401-5410'). Recommended for production.
         startup_mode: Startup mode — 'initial' (snapshot + streaming) or 'latest-offset' (streaming only)
-        extra: Additional connector properties to merge in
+        extra_properties: Additional connector properties to merge in
 
     Returns:
         Dict of validated connector properties
@@ -51,7 +51,7 @@
     {% if server_id is not none %}
         {% set _dummy = props.update({'server-id': server_id | string}) %}
     {% endif %}
-    {% set _dummy = props.update(extra) %}
+    {% set _dummy = props.update(extra_properties) %}
     {{ return(props) }}
 {% endmacro %}
 
@@ -67,7 +67,7 @@
     slot_name='flink_cdc_slot',
     decoding_plugin='pgoutput',
     startup_mode='initial',
-    extra={}
+    extra_properties={}
 ) %}
     {#
     Build a validated connector properties dict for postgres-cdc.
@@ -83,7 +83,7 @@
         slot_name: Replication slot name (default: 'flink_cdc_slot')
         decoding_plugin: Logical decoding plugin — 'pgoutput' (PG 10+) or 'decoderbufs'
         startup_mode: Startup mode — 'initial' (snapshot + streaming) or 'latest-offset'
-        extra: Additional connector properties to merge in
+        extra_properties: Additional connector properties to merge in
 
     Returns:
         Dict of validated connector properties
@@ -104,6 +104,6 @@
         'decoding.plugin.name': decoding_plugin,
         'scan.startup.mode': startup_mode,
     } %}
-    {% set _dummy = props.update(extra) %}
+    {% set _dummy = props.update(extra_properties) %}
     {{ return(props) }}
 {% endmacro %}

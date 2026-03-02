@@ -100,7 +100,7 @@ Choose the path that matches your goal:
 ### Reference
 - [Adapter Configuration](reference/adapter-config.md) -- profiles.yml, dbt_project.yml, model config options
 - [CLI Reference](reference/cli-reference.md) -- All dbt-flink-ververica commands and flags
-- [Macros](reference/macros.md) -- Window, watermark, and batch macro signatures
+- [Macros](reference/macros.md) -- Complete macro reference: catalogs, lakehouse backends, CDC, time travel, windows, watermarks, and more
 - [TOML Configuration](reference/toml-config.md) -- dbt-flink-ververica.toml reference
 - [SQL Transformation](reference/sql-transformation.md) -- How query hints become SET and DROP statements
 - [Flink Compatibility](reference/flink-compatibility.md) -- Version matrix and known limitations

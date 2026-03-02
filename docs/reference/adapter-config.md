@@ -169,10 +169,12 @@ models:
 | `properties` | dict | `{}` | Connector properties with the highest merge priority. Overrides both `connector_properties` and `default_connector_properties`. |
 | `connector_properties` | dict | `{}` | Connector properties with medium merge priority. Overrides `default_connector_properties`. |
 | `default_connector_properties` | dict | `{}` | Connector properties with the lowest merge priority. Typically set at the project or directory level. |
-| `schema` | string | `None` | Explicit column definitions for `streaming_table` materialization. Required when using watermarks. Example: `'col1 BIGINT, col2 STRING, ts TIMESTAMP(3)'`. |
-| `watermark` | dict | `None` | Watermark configuration for event-time processing. Keys: `column` (time column name), `strategy` (watermark expression). See [Macros Reference](macros.md#watermark-macros). |
+| `columns` | string | `None` | Explicit column definitions as a SQL string. Required when using `primary_key` or `watermark`. Example: `` '`col1` BIGINT, `col2` STRING, `ts` TIMESTAMP(3)' ``. **Do not use `schema` for column definitions** -- dbt-core reserves `schema` for custom schema names. |
+| `primary_key` | string or list | `None` | Column(s) for `PRIMARY KEY (...) NOT ENFORCED`. **Requires `columns` config** -- without explicit columns, `primary_key` is silently ignored in `table` materialization and raises an error in `streaming_table`. Example: `['user_id']` or `'user_id'`. |
+| `catalog_managed` | bool | `false` | When `true`, skips the `WITH (connector = ...)` clause entirely. Required for catalog-managed tables (Paimon, Iceberg, Hudi) where the catalog owns storage configuration. Also emits `CREATE TABLE` instead of `CREATE TEMPORARY TABLE`. |
+| `watermark` | dict | `None` | Watermark configuration for event-time processing. Keys: `column` (time column name), `strategy` (watermark expression). Requires `columns` config. See [Macros Reference](macros.md#watermark-macros). |
 | `unique_key` | string | `None` | Column or columns that uniquely identify rows. Required for `incremental` materialization with `merge` strategy. |
-| `incremental_strategy` | string | `append` | Strategy for incremental models. Options: `append` (INSERT INTO), `insert_overwrite` (INSERT OVERWRITE), `merge` (UPSERT via connector). |
+| `incremental_strategy` | string | `append` | Strategy for incremental models. Options: `append` (INSERT INTO), `insert_overwrite` (INSERT OVERWRITE), `merge` (UPSERT via connector), `iceberg_upsert` (Iceberg upsert-enabled INSERT). |
 | `partition_by` | list | `None` | Partition columns for `insert_overwrite` strategy or `materialized_table`. Example: `['date_col', 'region']`. |
 | `contract` | dict | `None` | Model contract enforcement. Set `{enforced: true}` to validate column names and types against the model definition at compile time. |
 | `upgrade_mode` | string | `stateless` | Ververica deployment upgrade mode. `stateless` discards state on upgrade, `stateful` preserves state from savepoint. |
@@ -231,6 +233,69 @@ topic = specific_topic                         (from properties)
 format = avro                                  (from properties, overrides default)
 ```
 
+## Lakehouse Configuration
+
+When using catalog-managed lakehouse backends (Paimon, Iceberg, Hudi), models require a different configuration pattern than connector-based tables. The catalog owns the storage location, file format, and compaction -- you provide table properties instead of connector properties.
+
+### Typical Lakehouse Model
+
+```sql
+{{
+  config(
+    materialized='table',
+    catalog_managed=true,
+    columns='`user_id` INT, `username` STRING, `email` STRING, `updated_at` TIMESTAMP(3)',
+    primary_key=['user_id'],
+    connector_properties=paimon_table_properties(
+      merge_engine='deduplicate',
+      changelog_producer='input'
+    )
+  )
+}}
+
+SELECT user_id, username, email, updated_at
+FROM {{ ref('stg_users') }}
+```
+
+**Key points:**
+
+- `catalog_managed=true` tells the adapter not to require a `connector` key in properties. Without this, the adapter defaults to `blackhole` connector.
+- `columns` provides explicit column definitions. This is **required** when using `primary_key` because Flink SQL cannot add a `PRIMARY KEY` constraint to a `CREATE TABLE AS SELECT` statement.
+- `connector_properties` receives the dict returned by a table properties macro (e.g., `paimon_table_properties()`, `iceberg_table_properties()`). These become the `WITH (...)` clause.
+- `primary_key` generates `PRIMARY KEY (user_id) NOT ENFORCED` in the DDL.
+
+### Backend-Specific Property Macros
+
+Each lakehouse backend has a main table properties macro that returns a dict for `connector_properties`:
+
+| Backend | Macro | Key Options |
+|---|---|---|
+| Paimon | `paimon_table_properties()` | `merge_engine`, `changelog_producer`, `sequence_field`, compaction settings |
+| Iceberg | `iceberg_table_properties()` | `format_version`, `write_format`, `compression_codec`, `upsert_enabled`, `commit_interval_ms` |
+| Hudi | `hudi_table_properties()` | `path`, `table_type` (COW/MOR), `precombine_field`, `record_key`, compaction, Hive sync |
+| Delta | `delta_table_properties()` | `path` |
+| Fluss | `fluss_table_properties()` | `bucket_num`, `merge_engine`, `tiered_storage_enabled`, `datalake_format` |
+
+See the [Macros Reference](macros.md#lakehouse-table-properties) for full signatures and examples.
+
+### Catalog Setup
+
+Lakehouse catalogs must be created before models run. Use `on-run-start` hooks in `dbt_project.yml`:
+
+```yaml
+on-run-start:
+  - "{{ create_paimon_catalog('lakehouse', 's3://bucket/warehouse') }}"
+```
+
+Or for Iceberg with Hive Metastore:
+
+```yaml
+on-run-start:
+  - "{{ create_iceberg_catalog('lakehouse', 'hive', 's3://bucket/warehouse', {'uri': 'thrift://hms:9083'}) }}"
+```
+
+See the [Macros Reference](macros.md#catalog-management-macros) for all catalog creation macros.
+
 ## Session Behavior
 
 The adapter creates a SQL Gateway session on first connection and reuses it for the duration of the dbt invocation.
@@ -287,5 +352,5 @@ flink:
 
 - [CLI Reference](cli-reference.md) -- Command-line options for the Ververica CLI
 - [TOML Configuration](toml-config.md) -- Configuration file for Ververica Cloud deployments
-- [Macros Reference](macros.md) -- Window, watermark, and batch macros
+- [Macros Reference](macros.md) -- Complete macro reference: catalogs, lakehouse backends, CDC, time travel, windows, watermarks, and more
 - [Flink Compatibility](flink-compatibility.md) -- Supported Flink and dbt-core versions
