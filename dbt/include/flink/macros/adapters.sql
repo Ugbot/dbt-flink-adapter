@@ -245,16 +245,4 @@ dbt docs: https://docs.getdbt.com/docs/contributing/building-a-new-adapter
   {%- endcall %}
 {%- endmacro %}
 
-/*
-
-Example 3 of 3 of required macros that does not have a default implementation.
- ** Good example of building out small methods ** please refer to impl.py for implementation of now() in postgres plugin
-{% macro postgres__current_timestamp() -%}
-  now()
-{%- endmacro %}
-
-*/
-
-{% macro flink__current_timestamp() -%}
-  CURRENT_TIMESTAMP
-{%- endmacro %}
+{# flink__current_timestamp() is defined in utils/timestamps.sql #}
