@@ -6,6 +6,18 @@
 
 The `dbt-flink-ververica.toml` file configures the CLI tool for compiling and deploying dbt models to Ververica Cloud. All sections are validated with Pydantic models at load time, so invalid values produce clear error messages.
 
+```mermaid
+graph TB
+    TOML["dbt-flink-ververica.toml"]
+    TOML --> VVC["[ververica]<br/>gateway, workspace, namespace"]
+    TOML --> DBT["[dbt]<br/>project_dir, target, models"]
+    TOML --> DEPLOY["[deployment]<br/>name, parallelism, engine"]
+    DEPLOY --> FLINK_CFG["[deployment.flink_config]<br/>state backend, checkpointing"]
+    DEPLOY --> TAGS["[deployment.tags]<br/>team, environment"]
+    TOML --> SQL["[sql_processing]<br/>hints, transformations"]
+    TOML --> LOCAL["[local_flink]<br/>compose file, JAR dir"]
+```
+
 Generate a default configuration file with:
 
 ```bash

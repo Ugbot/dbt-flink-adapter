@@ -6,6 +6,19 @@
 
 Complete reference for the `dbt-flink-ververica` command-line tool. This Typer-based CLI compiles dbt models to Flink SQL and deploys them to Ververica Cloud as SQLSCRIPT jobs.
 
+```mermaid
+graph LR
+    AUTH["auth login"] --> STATUS["auth status"]
+    AUTH --> COMPILE["compile"]
+    COMPILE --> DEPLOY["deploy"]
+    COMPILE --> WORKFLOW["workflow<br/>(compile + deploy)"]
+    CONFIG["config init"] --> VALIDATE["config validate"]
+    CONFIG -.->|"generates"| TOML["*.toml file"]
+    TOML -.->|"used by"| COMPILE
+    TOML -.->|"used by"| DEPLOY
+    TOML -.->|"used by"| WORKFLOW
+```
+
 ## Installation
 
 ```bash

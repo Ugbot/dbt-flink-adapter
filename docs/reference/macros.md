@@ -80,12 +80,30 @@ Quick-reference table of all public macros. Click a macro name to jump to its fu
 | [`snowflake_sink`](#snowflake_sink) | Write-specific with buffer flush config |
 | [`create_snowflake_iceberg_catalog`](#create_snowflake_iceberg_catalog) | REST catalog pointing to Snowflake Open Catalog / Polaris |
 
+### Connector Helpers
+
+| Macro | Connector | Description |
+|---|---|---|
+| [`kinesis_source_properties`](#kinesis_source_properties) | Kinesis | AWS Kinesis stream source |
+| [`kinesis_sink_properties`](#kinesis_sink_properties) | Kinesis | AWS Kinesis stream sink |
+| [`elasticsearch_source_properties`](#elasticsearch_source_properties) | Elasticsearch | ES source (read) |
+| [`elasticsearch_sink_properties`](#elasticsearch_sink_properties) | Elasticsearch | ES sink (write, ES6/ES7) |
+| [`starrocks_source_properties`](#starrocks_source_properties) | StarRocks | StarRocks OLAP source |
+| [`starrocks_sink_properties`](#starrocks_sink_properties) | StarRocks | StarRocks OLAP sink via Stream Load |
+| [`milvus_sink_properties`](#milvus_sink_properties) | Milvus | Milvus vector DB sink |
+| [`redis_sink_properties`](#redis_sink_properties) | Redis | Redis data structure sink |
+| [`redis_dimension_properties`](#redis_dimension_properties) | Redis | Redis dimension/lookup table |
+| [`faker_source_properties`](#faker_source_properties) | Faker | Test data with Java Faker expressions |
+
 ### CDC Source Helpers
 
 | Macro | Description |
 |---|---|
 | [`mysql_cdc_properties`](#mysql_cdc_properties) | MySQL CDC connector properties |
 | [`postgres_cdc_properties`](#postgres_cdc_properties) | PostgreSQL CDC connector properties |
+| [`mongodb_cdc_properties`](#mongodb_cdc_properties) | MongoDB CDC connector properties |
+| [`oracle_cdc_properties`](#oracle_cdc_properties) | Oracle CDC connector properties |
+| [`sqlserver_cdc_properties`](#sqlserver_cdc_properties) | SQL Server CDC connector properties |
 | [`validate_cdc_source`](#validate_cdc_source) | Validate CDC connector configuration at compile time |
 
 ### Window Macros
@@ -1054,6 +1072,450 @@ on-run-start:
 
 ---
 
+## Connector Helpers
+
+Convenience macros that return validated connector property dicts for non-CDC connectors. Each macro validates required parameters at compile time and returns a dict suitable for `connector_properties`.
+
+### kinesis_source_properties
+
+Build connector properties for an Amazon Kinesis Data Streams source.
+
+**Signature:**
+
+```
+{{ kinesis_source_properties(stream, aws_region, format, scan_initpos='LATEST', aws_endpoint=none, aws_credentials_provider=none, aws_access_key_id=none, aws_secret_key=none, extra_properties={}) }}
+```
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `stream` | string | -- | Kinesis data stream name |
+| `aws_region` | string | -- | AWS region (e.g., `'us-east-1'`). Required unless `aws_endpoint` is set. |
+| `format` | string | -- | Data format: `'json'`, `'avro'`, `'csv'`, `'raw'` |
+| `scan_initpos` | string | `'LATEST'` | Initial read position: `'LATEST'`, `'TRIM_HORIZON'`, `'AT_TIMESTAMP'` |
+| `aws_endpoint` | string | `None` | Custom AWS endpoint URL (overrides region-derived endpoint) |
+| `aws_credentials_provider` | string | `None` | Auth provider: `'AUTO'`, `'BASIC'`, `'PROFILE'`, `'ASSUME_ROLE'`, `'WEB_IDENTITY_TOKEN'` |
+| `aws_access_key_id` | string | `None` | AWS access key ID (for BASIC provider) |
+| `aws_secret_key` | string | `None` | AWS secret access key (for BASIC provider) |
+| `extra_properties` | dict | `{}` | Additional connector properties |
+
+**Example:**
+
+```sql
+{{ config(
+    materialized='streaming_table',
+    connector_properties=kinesis_source_properties(
+        stream='user-events',
+        aws_region='us-east-1',
+        format='json',
+        scan_initpos='TRIM_HORIZON'
+    )
+) }}
+```
+
+**Notes:**
+- Kinesis is an unbounded streaming source. It does not support bounded batch reads.
+- One of `aws_region` or `aws_endpoint` is required.
+
+---
+
+### kinesis_sink_properties
+
+Build connector properties for an Amazon Kinesis Data Streams sink.
+
+**Signature:**
+
+```
+{{ kinesis_sink_properties(stream, aws_region, format, sink_partitioner=none, aws_endpoint=none, aws_credentials_provider=none, aws_access_key_id=none, aws_secret_key=none, sink_batch_max_size=500, sink_flush_buffer_size=5242880, sink_flush_buffer_timeout=5000, extra_properties={}) }}
+```
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `stream` | string | -- | Kinesis data stream name |
+| `aws_region` | string | -- | AWS region. Required unless `aws_endpoint` is set. |
+| `format` | string | -- | Data format: `'json'`, `'avro'`, `'csv'`, `'raw'` |
+| `sink_partitioner` | string | `None` | Output partitioning: `'random'` or `'row-based'` |
+| `aws_endpoint` | string | `None` | Custom AWS endpoint URL |
+| `aws_credentials_provider` | string | `None` | Auth provider: `'AUTO'`, `'BASIC'`, `'PROFILE'`, `'ASSUME_ROLE'`, `'WEB_IDENTITY_TOKEN'` |
+| `aws_access_key_id` | string | `None` | AWS access key ID (for BASIC provider) |
+| `aws_secret_key` | string | `None` | AWS secret access key (for BASIC provider) |
+| `sink_batch_max_size` | int | `500` | Max batch size for writes |
+| `sink_flush_buffer_size` | int | `5242880` | Buffer flush threshold in bytes (default: 5MB) |
+| `sink_flush_buffer_timeout` | int | `5000` | Buffer flush timeout in milliseconds |
+| `extra_properties` | dict | `{}` | Additional connector properties |
+
+**Example:**
+
+```sql
+{{ config(
+    materialized='streaming_table',
+    connector_properties=kinesis_sink_properties(
+        stream='processed-events',
+        aws_region='us-east-1',
+        format='json'
+    )
+) }}
+```
+
+---
+
+### elasticsearch_source_properties
+
+Build connector properties for an Elasticsearch source (read).
+
+**Signature:**
+
+```
+{{ elasticsearch_source_properties(endpoint, index_name, access_id=none, access_key=none, type_names='_doc', batch_size=2000, keep_scroll_alive_secs=3600, extra_properties={}) }}
+```
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `endpoint` | string | -- | Elasticsearch endpoint (e.g., `'http://es:9200'`) |
+| `index_name` | string | -- | Index name to read from |
+| `access_id` | string | `None` | Authentication username |
+| `access_key` | string | `None` | Authentication password |
+| `type_names` | string | `'_doc'` | Document type names (ES6 compatibility) |
+| `batch_size` | int | `2000` | Documents per scroll request |
+| `keep_scroll_alive_secs` | int | `3600` | Scroll context timeout in seconds |
+| `extra_properties` | dict | `{}` | Additional connector properties |
+
+**Example:**
+
+```sql
+{{ config(
+    materialized='table',
+    connector_properties=elasticsearch_source_properties(
+        endpoint='http://elasticsearch:9200',
+        index_name='user-events',
+        batch_size=5000
+    )
+) }}
+```
+
+**Notes:**
+- Uses the Ververica `elasticsearch` connector (source), not the Apache `elasticsearch-7` connector.
+- Source reads are naturally bounded (batch-compatible).
+
+---
+
+### elasticsearch_sink_properties
+
+Build connector properties for an Elasticsearch sink (write). Supports ES6 and ES7.
+
+**Signature:**
+
+```
+{{ elasticsearch_sink_properties(hosts, index, version='7', username=none, password=none, document_type=none, document_id_key_delimiter=none, failure_handler='fail', flush_on_checkpoint=true, bulk_flush_max_actions=1000, bulk_flush_max_size='2mb', bulk_flush_interval='1s', extra_properties={}) }}
+```
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `hosts` | string | -- | Elasticsearch host(s) (e.g., `'http://es:9200'`) |
+| `index` | string | -- | Target index name |
+| `version` | string | `'7'` | Elasticsearch version: `'6'` or `'7'` |
+| `username` | string | `None` | Authentication username |
+| `password` | string | `None` | Authentication password |
+| `document_type` | string | `None` | Document type (required for ES6) |
+| `document_id_key_delimiter` | string | `None` | Delimiter for composite document IDs |
+| `failure_handler` | string | `'fail'` | Error handling: `'fail'`, `'ignore'`, `'retry-rejected'` |
+| `flush_on_checkpoint` | bool | `true` | Flush on Flink checkpoint |
+| `bulk_flush_max_actions` | int | `1000` | Max actions before bulk flush |
+| `bulk_flush_max_size` | string | `'2mb'` | Max size before bulk flush |
+| `bulk_flush_interval` | string | `'1s'` | Timed flush interval |
+| `extra_properties` | dict | `{}` | Additional connector properties |
+
+**Example:**
+
+```sql
+{{ config(
+    materialized='streaming_table',
+    connector_properties=elasticsearch_sink_properties(
+        hosts='http://elasticsearch:9200',
+        index='enriched-events',
+        username=env_var('ES_USER'),
+        password=env_var('ES_PASSWORD')
+    )
+) }}
+```
+
+---
+
+### starrocks_source_properties
+
+Build connector properties for reading from StarRocks via JDBC.
+
+**Signature:**
+
+```
+{{ starrocks_source_properties(jdbc_url, database_name, table_name, username, password, scan_url=none, scan_connect_timeout_ms=1000, scan_query_timeout_s=600, scan_mem_limit_byte=1073741824, scan_max_retries=1, extra_properties={}) }}
+```
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `jdbc_url` | string | -- | JDBC URL (`jdbc:mysql://<fe_ip>:<query_port>`) |
+| `database_name` | string | -- | StarRocks database |
+| `table_name` | string | -- | StarRocks table |
+| `username` | string | -- | Database username |
+| `password` | string | -- | Database password |
+| `scan_url` | string | `None` | BE scan URL for better read performance |
+| `scan_connect_timeout_ms` | int | `1000` | Scan connection timeout (ms) |
+| `scan_query_timeout_s` | int | `600` | Scan query timeout (seconds) |
+| `scan_mem_limit_byte` | int | `1073741824` | Scan memory limit (1GB default) |
+| `scan_max_retries` | int | `1` | Max scan retries |
+| `extra_properties` | dict | `{}` | Additional connector properties |
+
+**Example:**
+
+```sql
+{{ config(
+    materialized='table',
+    connector_properties=starrocks_source_properties(
+        jdbc_url='jdbc:mysql://starrocks-fe:9030',
+        database_name='analytics',
+        table_name='fact_events',
+        username=env_var('STARROCKS_USER'),
+        password=env_var('STARROCKS_PASSWORD')
+    )
+) }}
+```
+
+---
+
+### starrocks_sink_properties
+
+Build connector properties for writing to StarRocks via Stream Load API.
+
+**Signature:**
+
+```
+{{ starrocks_sink_properties(jdbc_url, database_name, table_name, username, password, load_url, sink_semantic='at-least-once', sink_buffer_flush_interval_ms=none, extra_properties={}) }}
+```
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `jdbc_url` | string | -- | JDBC URL (`jdbc:mysql://<fe_ip>:<query_port>`) |
+| `database_name` | string | -- | StarRocks database |
+| `table_name` | string | -- | StarRocks table |
+| `username` | string | -- | Database username |
+| `password` | string | -- | Database password |
+| `load_url` | string | -- | FE HTTP endpoint for Stream Load (`<fe_ip>:<http_port>`) |
+| `sink_semantic` | string | `'at-least-once'` | `'at-least-once'` or `'exactly-once'` |
+| `sink_buffer_flush_interval_ms` | int | `None` | Buffer flush interval in milliseconds |
+| `extra_properties` | dict | `{}` | Additional connector properties |
+
+**Example:**
+
+```sql
+{{ config(
+    materialized='streaming_table',
+    connector_properties=starrocks_sink_properties(
+        jdbc_url='jdbc:mysql://starrocks-fe:9030',
+        database_name='analytics',
+        table_name='fact_events',
+        username=env_var('STARROCKS_USER'),
+        password=env_var('STARROCKS_PASSWORD'),
+        load_url='starrocks-fe:8030'
+    )
+) }}
+```
+
+---
+
+### milvus_sink_properties
+
+Build connector properties for writing vector embeddings to Milvus. Milvus is a **sink-only** connector -- it cannot be used as a readable source.
+
+**Signature:**
+
+```
+{{ milvus_sink_properties(endpoint, username, password, database_name, collection_name, port=19530, partition_name=none, partition_key_enabled=false, sink_buffer_flush_max_rows=200, sink_buffer_flush_interval='3s', sink_max_retries=3, sink_ignore_delete=false, extra_properties={}) }}
+```
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `endpoint` | string | -- | Milvus hostname or IP |
+| `username` | string | -- | Authentication username |
+| `password` | string | -- | Authentication password |
+| `database_name` | string | -- | Target database |
+| `collection_name` | string | -- | Target collection (must exist with AUTO_ID disabled) |
+| `port` | int | `19530` | gRPC port |
+| `partition_name` | string | `None` | Partition name |
+| `partition_key_enabled` | bool | `false` | Enable partition key routing |
+| `sink_buffer_flush_max_rows` | int | `200` | Max buffered rows before flush |
+| `sink_buffer_flush_interval` | string | `'3s'` | Buffer flush interval |
+| `sink_max_retries` | int | `3` | Max write retries |
+| `sink_ignore_delete` | bool | `false` | Whether to ignore DELETE messages |
+| `extra_properties` | dict | `{}` | Additional connector properties |
+
+**Example:**
+
+```sql
+{{ config(
+    materialized='streaming_table',
+    connector_properties=milvus_sink_properties(
+        endpoint='milvus.example.com',
+        username=env_var('MILVUS_USER'),
+        password=env_var('MILVUS_PASSWORD'),
+        database_name='embeddings',
+        collection_name='product_vectors'
+    )
+) }}
+```
+
+**Notes:**
+- Milvus is sink-only. Do not define Milvus tables as sources for SELECT queries.
+- The target collection must already exist in Milvus with AUTO_ID disabled.
+
+---
+
+### redis_sink_properties
+
+Build connector properties for a Redis sink. Writes Flink data into Redis data structures.
+
+**Signature:**
+
+```
+{{ redis_sink_properties(host, mode, port=6379, password=none, db_num=0, cluster_mode=false, ignore_delete=false, expiration=0, extra_properties={}) }}
+```
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `host` | string | -- | Redis server address |
+| `mode` | string | -- | Redis data structure: `'string'`, `'hashmap'`, `'list'`, `'set'`, `'sortedset'` |
+| `port` | int | `6379` | Server port |
+| `password` | string | `None` | Authentication password |
+| `db_num` | int | `0` | Redis database number |
+| `cluster_mode` | bool | `false` | Redis cluster mode |
+| `ignore_delete` | bool | `false` | Whether to ignore retraction/DELETE messages |
+| `expiration` | int | `0` | TTL in seconds for written keys (0 = no expiration) |
+| `extra_properties` | dict | `{}` | Additional connector properties |
+
+**Example:**
+
+```sql
+{{ config(
+    materialized='streaming_table',
+    connector_properties=redis_sink_properties(
+        host='redis.example.com',
+        mode='hashmap',
+        password=env_var('REDIS_PASSWORD')
+    )
+) }}
+```
+
+---
+
+### redis_dimension_properties
+
+Build connector properties for a Redis dimension table (lookup joins).
+
+**Signature:**
+
+```
+{{ redis_dimension_properties(host, port=6379, password=none, db_num=0, cluster_mode=false, hash_name=none, cache='None', cache_size=10000, cache_ttl_ms=none, cache_empty=true, extra_properties={}) }}
+```
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `host` | string | -- | Redis server address |
+| `port` | int | `6379` | Server port |
+| `password` | string | `None` | Authentication password |
+| `db_num` | int | `0` | Redis database number |
+| `cluster_mode` | bool | `false` | Redis cluster mode |
+| `hash_name` | string | `None` | Hash key name when using hash mode |
+| `cache` | string | `'None'` | Caching strategy: `'None'` or `'LRU'` |
+| `cache_size` | int | `10000` | Max cached rows when using LRU |
+| `cache_ttl_ms` | int | `None` | Cache entry timeout in milliseconds |
+| `cache_empty` | bool | `true` | Whether to cache empty/miss results |
+| `extra_properties` | dict | `{}` | Additional connector properties |
+
+**Example:**
+
+```yaml
+# In schema.yml, define as a source with primary_key for lookup joins:
+sources:
+  - name: enrichment
+    tables:
+      - name: user_cache
+        config:
+          primary_key: [user_id]
+          connector_properties: {{ redis_dimension_properties(
+              host='redis.example.com',
+              cache='LRU',
+              cache_size=50000,
+              cache_ttl_ms=60000
+          ) }}
+```
+
+**Notes:**
+- Redis dimension tables require exactly one primary key column.
+- Use `cache='LRU'` for production lookup joins to reduce Redis round-trips.
+
+---
+
+### faker_source_properties
+
+Build connector properties for generating random test data using Java Faker expressions.
+
+**Signature:**
+
+```
+{{ faker_source_properties(field_expressions, rows_per_second=10000, number_of_rows=none, null_rates={}, array_lengths={}, extra_properties={}) }}
+```
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `field_expressions` | dict | -- | Map of column name to Faker expression (e.g., `{'name': "#{Name.fullName}"}`) |
+| `rows_per_second` | int | `10000` | Generation rate |
+| `number_of_rows` | int | `None` | Total rows to generate. If set, source is bounded (batch-compatible). |
+| `null_rates` | dict | `{}` | Map of column name to null probability (0.0-1.0) |
+| `array_lengths` | dict | `{}` | Map of column name to array length for ARRAY fields |
+| `extra_properties` | dict | `{}` | Additional connector properties |
+
+**Example:**
+
+```sql
+{{ config(
+    materialized='table',
+    connector_properties=faker_source_properties(
+        field_expressions={
+            'name': "#{Name.fullName}",
+            'email': "#{Internet.emailAddress}",
+            'age': "#{number.numberBetween '18','99'}",
+            'city': "#{Address.city}"
+        },
+        rows_per_second=1000,
+        number_of_rows=100000
+    )
+) }}
+```
+
+**Notes:**
+- Without `number_of_rows`, the source is unbounded (streaming). With it, the source is bounded (batch-compatible).
+- Field expressions use the Java Faker library syntax. See [Java Faker docs](https://github.com/DiUS/java-faker) for available expressions.
+
+---
+
 ## CDC Source Helpers
 
 Convenience macros that return validated connector property dicts for CDC connectors.
@@ -1128,6 +1590,146 @@ Build connector properties for the `postgres-cdc` connector.
 | `extra_properties` | dict | `{}` | Additional connector properties |
 
 Note: PostgreSQL must have `wal_level=logical` and sufficient `max_replication_slots`.
+
+---
+
+### mongodb_cdc_properties
+
+Build connector properties for the `mongodb-cdc` connector.
+
+**Signature:**
+
+```
+{{ mongodb_cdc_properties(hosts, database, collection, username=none, password=none, scheme='mongodb', startup_mode='initial', connection_options=none, batch_size=1024, extra_properties={}) }}
+```
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `hosts` | string | -- | MongoDB host(s) (e.g., `'mongo1:27017,mongo2:27017'`) |
+| `database` | string | -- | Database to capture changes from |
+| `collection` | string | -- | Collection to capture |
+| `username` | string | `None` | MongoDB username (if auth enabled) |
+| `password` | string | `None` | MongoDB password |
+| `scheme` | string | `'mongodb'` | Connection scheme: `'mongodb'` or `'mongodb+srv'` |
+| `startup_mode` | string | `'initial'` | `'initial'` (snapshot + streaming) or `'latest-offset'` |
+| `connection_options` | string | `None` | Additional connection string options |
+| `batch_size` | int | `1024` | Cursor batch size |
+| `extra_properties` | dict | `{}` | Additional connector properties |
+
+**Example:**
+
+```sql
+{{ config(
+    materialized='streaming_table',
+    connector_properties=mongodb_cdc_properties(
+        hosts='mongo-primary:27017',
+        database='ecommerce',
+        collection='orders',
+        username=env_var('MONGO_USER'),
+        password=env_var('MONGO_PASSWORD')
+    )
+) }}
+```
+
+**Notes:**
+- MongoDB must have a replica set configured for change streams to work.
+- The connector uses MongoDB Change Streams, so MongoDB 4.0+ is required.
+
+---
+
+### oracle_cdc_properties
+
+Build connector properties for the `oracle-cdc` connector.
+
+**Signature:**
+
+```
+{{ oracle_cdc_properties(hostname, port, username, password, database_name, schema_name, table_name, startup_mode='initial', extra_properties={}) }}
+```
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `hostname` | string | -- | Oracle server hostname |
+| `port` | int | -- | Oracle port (typically 1521) |
+| `username` | string | -- | User with LogMiner privileges |
+| `password` | string | -- | Oracle password |
+| `database_name` | string | -- | Oracle database (SID or service name) |
+| `schema_name` | string | -- | Schema name (e.g., `'HR'`) |
+| `table_name` | string | -- | Table to capture |
+| `startup_mode` | string | `'initial'` | `'initial'` or `'latest-offset'` |
+| `extra_properties` | dict | `{}` | Additional connector properties |
+
+**Example:**
+
+```sql
+{{ config(
+    materialized='streaming_table',
+    connector_properties=oracle_cdc_properties(
+        hostname='oracle-host',
+        port=1521,
+        username=env_var('ORACLE_USER'),
+        password=env_var('ORACLE_PASSWORD'),
+        database_name='ORCL',
+        schema_name='HR',
+        table_name='EMPLOYEES'
+    )
+) }}
+```
+
+**Notes:**
+- Requires Oracle 11g+ with LogMiner enabled.
+- The CDC user needs `SELECT_CATALOG_ROLE`, `EXECUTE_CATALOG_ROLE`, and LogMiner privileges.
+
+---
+
+### sqlserver_cdc_properties
+
+Build connector properties for the `sqlserver-cdc` connector.
+
+**Signature:**
+
+```
+{{ sqlserver_cdc_properties(hostname, port, username, password, database_name, schema_name, table_name, startup_mode='initial', extra_properties={}) }}
+```
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `hostname` | string | -- | SQL Server hostname |
+| `port` | int | -- | SQL Server port (typically 1433) |
+| `username` | string | -- | Database username |
+| `password` | string | -- | Database password |
+| `database_name` | string | -- | Database name |
+| `schema_name` | string | -- | Schema name (e.g., `'dbo'`) |
+| `table_name` | string | -- | Table to capture |
+| `startup_mode` | string | `'initial'` | `'initial'` or `'latest-offset'` |
+| `extra_properties` | dict | `{}` | Additional connector properties |
+
+**Example:**
+
+```sql
+{{ config(
+    materialized='streaming_table',
+    connector_properties=sqlserver_cdc_properties(
+        hostname='sqlserver-host',
+        port=1433,
+        username=env_var('SQLSERVER_USER'),
+        password=env_var('SQLSERVER_PASSWORD'),
+        database_name='SalesDB',
+        schema_name='dbo',
+        table_name='Orders'
+    )
+) }}
+```
+
+**Notes:**
+- SQL Server CDC must be enabled on the database and table: `EXEC sys.sp_cdc_enable_db` and `EXEC sys.sp_cdc_enable_table`.
+- Requires SQL Server 2016+.
 
 ---
 

@@ -6,6 +6,23 @@
 
 This guide covers deploying dbt-flink models to Ververica Cloud from CI/CD pipelines using GitHub Actions. The patterns here apply to any CI system -- the core workflow is: install dependencies, authenticate, compile dbt models, and deploy the transformed SQL.
 
+```mermaid
+graph LR
+    subgraph "Developer"
+        CODE["Code changes"] --> PR["Pull Request"]
+    end
+    subgraph "GitHub Actions"
+        PR --> BUILD["Install deps"]
+        BUILD --> COMPILE["dbt compile"]
+        COMPILE --> TRANSFORM["SQL transform"]
+        TRANSFORM --> DEPLOY["Deploy to VVC"]
+    end
+    subgraph "Ververica Cloud"
+        DEPLOY --> STAGING["Staging"]
+        STAGING --> PROD["Production"]
+    end
+```
+
 ## GitHub Actions Workflow
 
 The `workflow` command handles the entire pipeline in a single invocation: compile, transform, authenticate, deploy each model, and optionally start all jobs. No separate auth or compile steps are needed.
@@ -113,6 +130,15 @@ These values must never appear in logs or config files.
 ## Multi-Environment Deployment
 
 Maintain separate TOML configuration files for each environment and select the appropriate one at deployment time.
+
+```mermaid
+graph TB
+    subgraph "Configuration"
+        DEV_TOML["dev.toml"] --> DEV["dev workspace"]
+        STG_TOML["staging.toml"] --> STG["staging workspace"]
+        PRD_TOML["production.toml"] --> PRD["production workspace"]
+    end
+```
 
 ### Directory Structure
 

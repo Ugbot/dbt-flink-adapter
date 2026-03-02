@@ -35,6 +35,11 @@
 {% if connector_type.endswith('-cdc') %}
 {{ validate_cdc_source(connector_type, connector_properties, node.identifier) }}
 {% endif %}
+{# Validate known non-CDC connector properties if applicable #}
+{% set validated_connectors = ['kinesis', 'elasticsearch', 'elasticsearch-6', 'elasticsearch-7', 'starrocks', 'milvus', 'redis', 'faker'] %}
+{% if connector_type in validated_connectors %}
+{{ validate_connector_source(connector_type, connector_properties, node.identifier) }}
+{% endif %}
 {% if not catalog_managed %}
 {# Ensure the source database exists (node.schema = dbt source name = Flink database) #}
 {% if node.schema %}

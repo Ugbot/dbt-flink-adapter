@@ -6,6 +6,48 @@
 
 dbt sources map external data systems -- Kafka topics, database tables, file directories -- into the dbt DAG. In dbt-flink-adapter, source definitions create Flink `CREATE TABLE` statements with connector configuration, column definitions, and optional watermarks. The `create_sources` macro materializes all sources into the Flink catalog before your models run.
 
+## Connector Ecosystem
+
+```mermaid
+graph TB
+    subgraph "Streaming Sources"
+        KAFKA["Kafka"]
+        KINESIS["Kinesis"]
+        CDC["CDC Connectors<br/>MySQL, PG, Mongo,<br/>Oracle, SQL Server"]
+        FAKER["Faker"]
+        DATAGEN["DataGen"]
+    end
+    subgraph "Batch Sources"
+        JDBC["JDBC"]
+        FS["Filesystem"]
+        ES_SRC["Elasticsearch"]
+        SR_SRC["StarRocks"]
+    end
+    subgraph "Flink SQL"
+        FLINK["Apache Flink"]
+    end
+    subgraph "Sinks"
+        K_SINK["Kafka / Upsert-Kafka"]
+        ES_SINK["Elasticsearch"]
+        SR_SINK["StarRocks"]
+        MILVUS["Milvus"]
+        REDIS["Redis"]
+        SF["Snowflake"]
+        BH["Blackhole / Print"]
+    end
+    subgraph "Lakehouse"
+        PAIMON["Paimon"]
+        ICEBERG["Iceberg"]
+        FLUSS["Fluss"]
+        HUDI["Hudi"]
+        DELTA["Delta"]
+    end
+    KAFKA & KINESIS & CDC & FAKER & DATAGEN --> FLINK
+    JDBC & FS & ES_SRC & SR_SRC --> FLINK
+    FLINK --> K_SINK & ES_SINK & SR_SINK & MILVUS & REDIS & SF & BH
+    FLINK <--> PAIMON & ICEBERG & FLUSS & HUDI & DELTA
+```
+
 ## Defining Sources
 
 Sources are defined in `schema.yml` files with columns, data types, connector properties, and optional watermarks.
@@ -296,6 +338,216 @@ CDC connector JARs are not bundled with Flink. For Ververica Cloud, use `--addit
 
 For the full CDC guide including database setup, deployment, and troubleshooting, see [CDC Sources](./cdc-sources.md).
 
+### Amazon Kinesis (Streaming)
+
+Reads from or writes to Amazon Kinesis Data Streams. Kinesis is an unbounded streaming source.
+
+```yaml
+config:
+  connector_properties:
+    connector: kinesis
+    stream: user-events
+    aws.region: us-east-1
+    format: json
+    scan.stream.initpos: TRIM_HORIZON
+```
+
+| Property | Required | Description |
+|---|---|---|
+| `connector` | Yes | `kinesis` |
+| `stream` | Yes | Kinesis data stream name |
+| `aws.region` | Yes* | AWS region (e.g., `us-east-1`) |
+| `aws.endpoint` | Yes* | Custom endpoint (alternative to region) |
+| `format` | Yes | Data format: `json`, `avro`, `csv`, `raw` |
+| `scan.stream.initpos` | No | Initial position: `LATEST` (default), `TRIM_HORIZON`, `AT_TIMESTAMP` |
+
+*One of `aws.region` or `aws.endpoint` required.
+
+The adapter provides convenience macros:
+
+```sql
+{{ config(
+    connector_properties=kinesis_source_properties(
+        stream='user-events',
+        aws_region='us-east-1',
+        format='json',
+        scan_initpos='TRIM_HORIZON'
+    )
+) }}
+```
+
+### Elasticsearch (Streaming/Batch)
+
+Read from or write to Elasticsearch indices. Source reads are naturally bounded (batch). Sinks support streaming writes.
+
+**Source (read):**
+
+```yaml
+config:
+  connector_properties:
+    connector: elasticsearch
+    endPoint: "http://elasticsearch:9200"
+    indexName: user-events
+```
+
+**Sink (write, ES7):**
+
+```yaml
+config:
+  connector_properties:
+    connector: elasticsearch-7
+    hosts: "http://elasticsearch:9200"
+    index: enriched-events
+    username: "{{ env_var('ES_USER') }}"
+    password: "{{ env_var('ES_PASSWORD') }}"
+```
+
+| Property (Source) | Required | Description |
+|---|---|---|
+| `connector` | Yes | `elasticsearch` |
+| `endPoint` | Yes | Server address (e.g., `http://host:9200`) |
+| `indexName` | Yes | Index name to read from |
+| `batchSize` | No | Docs per scroll request (default: 2000) |
+
+| Property (Sink) | Required | Description |
+|---|---|---|
+| `connector` | Yes | `elasticsearch-7` or `elasticsearch-6` |
+| `hosts` | Yes | Server address(es) |
+| `index` | Yes | Target index name |
+| `document-type` | ES6 only | Document type (required for ES6) |
+| `failure-handler` | No | `fail` (default), `ignore`, `retry-rejected` |
+
+### StarRocks (Streaming/Batch)
+
+Read from or write to StarRocks OLAP database. Source reads are naturally bounded. Sink writes use Stream Load API.
+
+```yaml
+config:
+  connector_properties:
+    connector: starrocks
+    jdbc-url: "jdbc:mysql://starrocks-fe:9030"
+    database-name: analytics
+    table-name: fact_events
+    username: "{{ env_var('STARROCKS_USER') }}"
+    password: "{{ env_var('STARROCKS_PASSWORD') }}"
+    load-url: "starrocks-fe:8030"  # Required for sink
+```
+
+| Property | Required | Description |
+|---|---|---|
+| `connector` | Yes | `starrocks` |
+| `jdbc-url` | Yes | JDBC URL (`jdbc:mysql://<fe_ip>:<query_port>`) |
+| `database-name` | Yes | StarRocks database |
+| `table-name` | Yes | StarRocks table |
+| `username` | Yes | Database credentials |
+| `password` | Yes | Database credentials |
+| `load-url` | Sink only | FE HTTP endpoint for Stream Load (`<fe_ip>:<http_port>`) |
+| `sink.semantic` | No | `at-least-once` (default) or `exactly-once` |
+
+### Milvus (Sink Only)
+
+Write vector embeddings to Milvus vector database. Sink-only connector with upsert semantics.
+
+```yaml
+config:
+  connector_properties:
+    connector: milvus
+    endpoint: milvus.example.com
+    userName: "{{ env_var('MILVUS_USER') }}"
+    password: "{{ env_var('MILVUS_PASSWORD') }}"
+    databaseName: embeddings
+    collectionName: product_vectors
+```
+
+| Property | Required | Description |
+|---|---|---|
+| `connector` | Yes | `milvus` |
+| `endpoint` | Yes | Milvus hostname or IP |
+| `port` | No | gRPC port (default: 19530) |
+| `userName` | Yes | Authentication username |
+| `password` | Yes | Authentication password |
+| `databaseName` | Yes | Target database |
+| `collectionName` | Yes | Target collection (must exist with AUTO_ID disabled) |
+
+### Redis (Sink/Dimension)
+
+Write to Redis or use Redis as a dimension table for lookup joins.
+
+**Sink:**
+
+```yaml
+config:
+  connector_properties:
+    connector: redis
+    host: redis.example.com
+    mode: hashmap
+    password: "{{ env_var('REDIS_PASSWORD') }}"
+```
+
+**Dimension (lookup join):**
+
+```yaml
+config:
+  primary_key: [user_id]
+  connector_properties:
+    connector: redis
+    host: redis.example.com
+    cache: LRU
+    cacheSize: '50000'
+    cacheTTLMs: '60000'
+```
+
+| Property | Required | Description |
+|---|---|---|
+| `connector` | Yes | `redis` |
+| `host` | Yes | Redis server address |
+| `port` | No | Server port (default: 6379) |
+| `mode` | Sink only | Redis data structure: `string`, `hashmap`, `list`, `set`, `sortedset` |
+| `cache` | Dimension only | Caching strategy: `None` (default) or `LRU` |
+| `cacheSize` | No | Max cached rows for LRU (default: 10000) |
+
+### Faker (Testing)
+
+Generates random test data using Java Faker expressions. More expressive than `datagen` for realistic test data.
+
+```yaml
+config:
+  connector_properties:
+    connector: faker
+    rows-per-second: '1000'
+    number-of-rows: '100000'
+    fields.name.expression: "#{Name.fullName}"
+    fields.email.expression: "#{Internet.emailAddress}"
+    fields.age.expression: "#{number.numberBetween '18','99'}"
+    fields.city.expression: "#{Address.city}"
+```
+
+Without `number-of-rows`, the source is unbounded (streaming). With it, the source is bounded (batch-compatible).
+
+| Property | Required | Description |
+|---|---|---|
+| `connector` | Yes | `faker` |
+| `fields.<col>.expression` | Yes (1+) | Java Faker expression (e.g., `#{Name.fullName}`) |
+| `fields.<col>.null-rate` | No | Null probability 0.0-1.0 (default: 0) |
+| `rows-per-second` | No | Generation rate (default: 10000) |
+| `number-of-rows` | No | Total rows to generate (bounded mode) |
+
+The adapter provides a convenience macro that builds field expressions from a dict:
+
+```sql
+{{ config(
+    connector_properties=faker_source_properties(
+        field_expressions={
+            'name': "#{Name.fullName}",
+            'email': "#{Internet.emailAddress}",
+            'age': "#{number.numberBetween '18','99'}"
+        },
+        rows_per_second=1000,
+        number_of_rows=100000
+    )
+) }}
+```
+
 ### Connector Summary
 
 | Connector | Streaming | Batch | Naturally Bounded | Primary Use |
@@ -303,11 +555,46 @@ For the full CDC guide including database setup, deployment, and troubleshooting
 | `kafka` | Yes | Yes (with bounded mode) | No | Event streaming |
 | `upsert-kafka` | Yes | No | No | Keyed state / changelog |
 | `datagen` | Yes | Yes (with number-of-rows) | No | Testing |
+| `faker` | Yes | Yes (with number-of-rows) | No | Testing (Java Faker expressions) |
 | `filesystem` | No | Yes | Yes | Data lake reads |
 | `jdbc` | No | Yes | Yes | Database reads |
+| `kinesis` | Yes | No | No | AWS stream ingestion |
+| `elasticsearch` | Yes (sink) | Yes (source) | Source only | Search & analytics |
+| `starrocks` | Yes (sink) | Yes (source) | Source only | OLAP analytics |
+| `milvus` | Yes | N/A (sink only) | N/A | Vector embeddings |
+| `redis` | Yes | N/A (sink/dimension) | N/A | Caching, lookup joins |
 | `postgres-cdc` | Yes | No | No | PostgreSQL change capture |
 | `mysql-cdc` | Yes | No | No | MySQL change capture |
+| `mongodb-cdc` | Yes | No | No | MongoDB change capture |
+| `oracle-cdc` | Yes | No | No | Oracle change capture |
+| `sqlserver-cdc` | Yes | No | No | SQL Server change capture |
 | `blackhole` | Yes | Yes | N/A (sink only) | Development / testing |
+| `print` | Yes | Yes | N/A (sink only) | Debugging |
+
+## Choosing a Connector
+
+```mermaid
+flowchart TD
+    START["Need to connect to..."] --> Q1{"Data source type?"}
+    Q1 -->|"Message queue"| Q2{"Which platform?"}
+    Q2 -->|"Apache Kafka"| KAFKA["kafka / upsert-kafka"]
+    Q2 -->|"AWS Kinesis"| KINESIS["kinesis"]
+    Q1 -->|"Database (read)"| Q3{"Streaming or Batch?"}
+    Q3 -->|"Streaming CDC"| CDC["*-cdc connectors"]
+    Q3 -->|"Batch snapshot"| JDBC["jdbc"]
+    Q1 -->|"Search engine"| ES["elasticsearch"]
+    Q1 -->|"OLAP database"| SR["starrocks"]
+    Q1 -->|"Vector database"| MILVUS["milvus (sink only)"]
+    Q1 -->|"Cache / lookup"| REDIS["redis"]
+    Q1 -->|"Data lake files"| FS["filesystem"]
+    Q1 -->|"Data lakehouse"| LH{"Which format?"}
+    LH -->|"Paimon"| PAIMON["paimon (catalog)"]
+    LH -->|"Iceberg"| ICEBERG["iceberg (catalog)"]
+    LH -->|"Fluss"| FLUSS["fluss (catalog)"]
+    Q1 -->|"Test data"| Q4{"Need realistic data?"}
+    Q4 -->|"Yes"| FAKER["faker"]
+    Q4 -->|"Simple random"| DATAGEN["datagen"]
+```
 
 ## Default Connector Properties (DRY Pattern)
 

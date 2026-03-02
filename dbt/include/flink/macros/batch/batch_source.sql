@@ -97,6 +97,61 @@
         info=true
       ) %}
     {% endif %}
+
+  {% elif connector_type == 'kinesis' %}
+    {# Kinesis is unbounded — no native bounded mode in the Flink Kinesis connector #}
+    {% do log(
+      'WARNING: Kinesis connector does not support bounded batch reads natively. ' ~
+      'The source will be unbounded. Consider using a Kinesis-to-S3 pipeline ' ~
+      'and reading from S3 via the filesystem connector for true batch processing.',
+      info=true
+    ) %}
+
+  {% elif connector_type in ['elasticsearch', 'elasticsearch-6', 'elasticsearch-7'] %}
+    {# Elasticsearch snapshot reads are naturally bounded #}
+    {% do log(
+      'INFO: Elasticsearch batch source reading index snapshot. ' ~
+      'Tune batchSize for large indices (default: 2000 docs per scroll).',
+      info=true
+    ) %}
+
+  {% elif connector_type == 'starrocks' %}
+    {# StarRocks is naturally bounded via JDBC/scan #}
+    {% if 'scan-url' not in batch_properties %}
+      {% do log(
+        'INFO: StarRocks batch source without scan-url will use JDBC for reads. ' ~
+        'Set scan-url for better read performance with large tables.',
+        info=true
+      ) %}
+    {% endif %}
+
+  {% elif connector_type == 'faker' %}
+    {# Faker requires number-of-rows for bounded generation (same as datagen) #}
+    {% if 'number-of-rows' not in batch_properties %}
+      {% do log(
+        'WARNING: faker connector without number-of-rows will be unbounded. ' ~
+        'Set number-of-rows for batch mode.',
+        info=true
+      ) %}
+    {% endif %}
+
+  {% elif connector_type == 'redis' %}
+    {# Redis is a dimension/lookup table, not a scannable source #}
+    {% do log(
+      'WARNING: Redis connector is not a scannable source for batch reads. ' ~
+      'Redis is designed for dimension/lookup joins and sink operations. ' ~
+      'Consider using a different connector for batch source data.',
+      info=true
+    ) %}
+
+  {% elif connector_type in ['mysql-cdc', 'postgres-cdc', 'mongodb-cdc', 'oracle-cdc', 'sqlserver-cdc'] %}
+    {# CDC connectors are streaming-only — they produce unbounded changelogs #}
+    {% do log(
+      'WARNING: ' ~ connector_type ~ ' is a streaming-only connector and cannot produce bounded batch results. ' ~
+      'CDC connectors capture continuous changelogs and have no bounded mode. ' ~
+      'For batch reads from the same database, use the jdbc connector with a snapshot query instead.',
+      info=true
+    ) %}
   {% endif %}
 
   {{ return(batch_properties) }}
