@@ -24,7 +24,7 @@
     {# -- incremental run: insert new data into existing table #}
 
     {# Validate incremental strategy #}
-    {% set valid_strategies = ['append', 'insert_overwrite', 'merge'] %}
+    {% set valid_strategies = ['append', 'insert_overwrite', 'merge', 'iceberg_upsert'] %}
     {% if incremental_strategy not in valid_strategies %}
       {% do exceptions.raise_compiler_error(
         'Invalid incremental_strategy: "' ~ incremental_strategy ~ '". ' ~
@@ -143,6 +143,51 @@
         {% set execution_config = config.get('execution_config', {}) %}
         {% if execution_config %}/** execution_config('{% for cfg_name in execution_config %}{{cfg_name}}={{execution_config[cfg_name]}}{% if not loop.last %};{% endif %}{% endfor %}') */{% endif %}
         INSERT INTO {{ target_relation }}
+        {{ sql }}
+      {%- endcall -%}
+
+    {% elif incremental_strategy == 'iceberg_upsert' %}
+
+      {# Strategy 4: ICEBERG UPSERT - Uses Iceberg format-version 2 equality deletes #}
+      {# Flink SQL doesn't have native MERGE INTO, but Iceberg's upsert-enabled #}
+      {# option enables INSERT to act as UPSERT on the primary key columns. #}
+      {# This is the Flink equivalent of dbt-spark's merge strategy for Iceberg. #}
+
+      {% set unique_key = config.get('unique_key') %}
+      {% if not unique_key %}
+        {% do exceptions.raise_compiler_error(
+          'incremental_strategy="iceberg_upsert" requires unique_key to be configured. '
+          ~ 'The unique_key should match the PRIMARY KEY defined on the Iceberg table.'
+        ) %}
+      {% endif %}
+
+      {% set catalog_managed = config.get('catalog_managed', false) %}
+      {% if not catalog_managed %}
+        {% do exceptions.raise_compiler_error(
+          'incremental_strategy="iceberg_upsert" requires catalog_managed=true. '
+          ~ 'Iceberg upsert operates on catalog-managed Iceberg tables, not connector-based tables.'
+        ) %}
+      {% endif %}
+
+      {# Warn if properties don't include format-version 2 #}
+      {% set model_properties = config.get('properties', {}) %}
+      {% set format_version = model_properties.get('format-version', none) %}
+      {% if format_version is not none and format_version | string != '2' %}
+        {% do exceptions.raise_compiler_error(
+          'incremental_strategy="iceberg_upsert" requires Iceberg format-version 2. '
+          ~ 'Got format-version=' ~ format_version ~ '. '
+          ~ 'Use iceberg_table_properties(format_version=2, upsert_enabled=true) or '
+          ~ 'iceberg_upsert_properties() in your model config.'
+        ) %}
+      {% endif %}
+
+      {%- call statement('main') -%}
+        /** mode('{{execution_mode}}') */
+        /** upgrade_mode('{{ config.get("upgrade_mode", "stateless") }}') */
+        /** job_state('{{ config.get("job_state", "running") }}') */
+        {% set execution_config = config.get('execution_config', {}) %}
+        {% if execution_config %}/** execution_config('{% for cfg_name in execution_config %}{{cfg_name}}={{execution_config[cfg_name]}}{% if not loop.last %};{% endif %}{% endfor %}') */{% endif %}
+        INSERT INTO {{ target_relation }} /*+ OPTIONS('upsert-enabled' = 'true') */
         {{ sql }}
       {%- endcall -%}
 

@@ -138,32 +138,163 @@
     Create an Iceberg catalog.
 
     Iceberg catalogs provide ACID table management with schema evolution,
-    hidden partitioning (not in Flink SQL), and time travel.
+    hidden partitioning, time travel, and row-level operations (format v2).
+
+    Supported catalog types:
+      - 'hive': Hive metastore (requires uri property)
+      - 'hadoop': Hadoop filesystem (no external metastore)
+      - 'rest': REST catalog (Polaris, Tabular, custom REST servers)
+      - 'glue': AWS Glue Data Catalog (sets catalog-impl + io-impl automatically)
+      - 'jdbc': JDBC-backed catalog (requires jdbc.user, jdbc.password, uri)
+      - 'nessie': Nessie git-like versioning catalog (requires uri, optional ref)
 
     Args:
         name (str): Catalog name
-        catalog_type (str): Iceberg catalog implementation:
-            - 'hive': Hive metastore-based catalog
-            - 'hadoop': Hadoop filesystem-based catalog
-            - 'rest': REST catalog (e.g., Nessie, Polaris, Tabular)
+        catalog_type (str): Iceberg catalog implementation (see above)
         warehouse (str): Warehouse path (e.g., 's3://bucket/iceberg')
         properties (dict): Additional Iceberg catalog properties. Common options:
-            - uri: Metastore/REST URI
+            - uri: Metastore/REST/Nessie URI
             - io-impl: I/O implementation class (e.g., for S3)
             - clients: Number of client connections
+            - ref: Nessie branch reference (default: 'main')
+            - credential: REST catalog authentication token
+            - jdbc.user: JDBC catalog username
+            - jdbc.password: JDBC catalog password
 
-    Example:
+    Example (Hive):
+        {{ create_iceberg_catalog('ice', 'hive', 's3://my-bucket/iceberg',
+           {'uri': 'thrift://hive-metastore:9083'}) }}
+
+    Example (REST / Polaris):
         {{ create_iceberg_catalog('ice', 'rest', 's3://my-bucket/iceberg',
-           {'uri': 'http://rest-catalog:8181'}) }}
+           {'uri': 'http://polaris:8181'}) }}
+
+    Example (Glue):
+        {{ create_iceberg_catalog('ice', 'glue', 's3://my-bucket/iceberg',
+           {'glue.region': 'us-east-1'}) }}
+
+    Example (Nessie):
+        {{ create_iceberg_catalog('ice', 'nessie', 's3://my-bucket/iceberg',
+           {'uri': 'http://nessie:19120/api/v1', 'ref': 'main'}) }}
+
+    Example (JDBC):
+        {{ create_iceberg_catalog('ice', 'jdbc', 's3://my-bucket/iceberg',
+           {'uri': 'jdbc:postgresql://localhost:5432/iceberg_db',
+            'jdbc.user': 'admin', 'jdbc.password': 'secret'}) }}
   #}
 
-  {% set catalog_properties = {
-    'catalog-type': catalog_type,
-    'warehouse': warehouse
-  } %}
+  {% set valid_catalog_types = ['hive', 'hadoop', 'rest', 'glue', 'jdbc', 'nessie'] %}
+  {% if catalog_type not in valid_catalog_types %}
+    {% do exceptions.raise_compiler_error(
+      'Invalid Iceberg catalog_type: "' ~ catalog_type ~ '". '
+      ~ 'Valid types: ' ~ valid_catalog_types | join(', ')
+    ) %}
+  {% endif %}
+
+  {% set catalog_properties = {'warehouse': warehouse} %}
+
+  {# catalog-type based catalogs (hive, hadoop, rest) use the built-in catalog-type property #}
+  {% if catalog_type in ['hive', 'hadoop', 'rest'] %}
+    {% set _dummy = catalog_properties.update({'catalog-type': catalog_type}) %}
+
+  {# Glue catalog requires explicit implementation class #}
+  {% elif catalog_type == 'glue' %}
+    {% set _dummy = catalog_properties.update({
+      'catalog-impl': 'org.apache.iceberg.aws.glue.GlueCatalog',
+      'io-impl': 'org.apache.iceberg.aws.s3.S3FileIO'
+    }) %}
+
+  {# JDBC catalog requires explicit implementation class #}
+  {% elif catalog_type == 'jdbc' %}
+    {% if 'uri' not in properties %}
+      {% do exceptions.raise_compiler_error(
+        'Iceberg JDBC catalog requires "uri" property (e.g., "jdbc:postgresql://host:5432/db")'
+      ) %}
+    {% endif %}
+    {% set _dummy = catalog_properties.update({
+      'catalog-impl': 'org.apache.iceberg.jdbc.JdbcCatalog'
+    }) %}
+
+  {# Nessie catalog requires explicit implementation class #}
+  {% elif catalog_type == 'nessie' %}
+    {% if 'uri' not in properties %}
+      {% do exceptions.raise_compiler_error(
+        'Iceberg Nessie catalog requires "uri" property (e.g., "http://nessie:19120/api/v1")'
+      ) %}
+    {% endif %}
+    {% set _dummy = catalog_properties.update({
+      'catalog-impl': 'org.apache.iceberg.nessie.NessieCatalog'
+    }) %}
+    {# Default ref to 'main' if not specified #}
+    {% if 'ref' not in properties %}
+      {% set _dummy = catalog_properties.update({'ref': 'main'}) %}
+    {% endif %}
+  {% endif %}
+
   {% set _dummy = catalog_properties.update(properties) %}
 
   {{ create_catalog(name, 'iceberg', catalog_properties) }}
+{% endmacro %}
+
+
+{% macro create_glue_catalog(name, warehouse, region=none, properties={}) %}
+  {#
+    Create an Iceberg catalog backed by AWS Glue Data Catalog.
+
+    Convenience macro that configures an Iceberg catalog using AWS Glue
+    as the metadata store. Glue provides a serverless, scalable catalog
+    service integrated with the AWS ecosystem.
+
+    Args:
+        name (str): Catalog name
+        warehouse (str): S3 warehouse path (e.g., 's3://my-bucket/iceberg')
+        region (str): AWS region (e.g., 'us-east-1'). If none, uses default.
+        properties (dict): Additional catalog properties. Common options:
+            - glue.skip-archive: 'true' to skip Glue table version archiving
+            - glue.endpoint: Custom Glue endpoint URL
+
+    Example:
+        {{ create_glue_catalog('lake', 's3://my-bucket/iceberg', region='us-east-1') }}
+  #}
+
+  {% set glue_props = {} %}
+  {% if region is not none %}
+    {% set _dummy = glue_props.update({'glue.region': region}) %}
+  {% endif %}
+  {% set _dummy = glue_props.update(properties) %}
+
+  {{ create_iceberg_catalog(name, 'glue', warehouse, glue_props) }}
+{% endmacro %}
+
+
+{% macro create_nessie_catalog(name, uri, warehouse, ref='main', properties={}) %}
+  {#
+    Create an Iceberg catalog backed by Project Nessie.
+
+    Nessie provides git-like versioning for data lakes: branches, tags,
+    commits, and merges. Enables isolated development environments and
+    safe schema evolution via branching.
+
+    Args:
+        name (str): Catalog name
+        uri (str): Nessie server API endpoint (e.g., 'http://nessie:19120/api/v1')
+        warehouse (str): Storage warehouse path
+        ref (str): Nessie branch reference (default: 'main')
+        properties (dict): Additional catalog properties. Common options:
+            - authentication.type: 'BEARER' or 'OAUTH2'
+            - authentication.token: Bearer token value
+            - oauth2.client-id: OAuth2 client ID
+            - oauth2.client-secret: OAuth2 client secret
+
+    Example:
+        {{ create_nessie_catalog('lake', 'http://nessie:19120/api/v1',
+           's3://my-bucket/iceberg', ref='development') }}
+  #}
+
+  {% set nessie_props = {'uri': uri, 'ref': ref} %}
+  {% set _dummy = nessie_props.update(properties) %}
+
+  {{ create_iceberg_catalog(name, 'nessie', warehouse, nessie_props) }}
 {% endmacro %}
 
 

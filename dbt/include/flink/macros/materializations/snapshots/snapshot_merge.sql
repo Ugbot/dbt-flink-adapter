@@ -1,16 +1,25 @@
 {#
   Flink-specific snapshot merge SQL for SCD Type 2.
 
-  Flink SQL does not support MERGE INTO, so we use separate
-  UPDATE + INSERT statements (similar to the PostgreSQL adapter).
+  Two strategies:
+    1. Paimon/generic: UPDATE + INSERT (Flink SQL lacks MERGE INTO)
+    2. Iceberg: Upsert-enabled INSERT (format-version 2 equality deletes)
 
-  Flink SQL's UPDATE does not support the FROM ... WHERE join syntax,
-  so we use an IN subquery to match records by dbt_scd_id.
+  For Paimon tables:
+    - Uses separate UPDATE + INSERT statements
+    - UPDATE uses correlated subquery (no FROM ... WHERE join in Flink)
+    - Requires primary key table with deduplicate or partial-update engine
+
+  For Iceberg tables:
+    - Uses upsert-enabled INSERT which handles update-or-insert on PK
+    - Requires format-version 2 for row-level operations
+    - More efficient than UPDATE + INSERT pattern
 
   Requirements:
-    - Target table must be a Paimon primary key table (supports UPDATE/DELETE in batch mode)
+    - Target table must be catalog-managed (Paimon or Iceberg)
     - Must run in batch execution mode
-    - Table must use deduplicate or partial-update merge engine
+    - Paimon: deduplicate or partial-update merge engine
+    - Iceberg: format-version 2 with primary key
 
   Not supported:
     - Kafka, datagen, filesystem connectors (no UPDATE support)
@@ -19,6 +28,56 @@
 
 
 {% macro flink__snapshot_merge_sql(target, source, insert_cols) -%}
+    {#
+      Detect if this is an Iceberg table by checking model properties.
+      If iceberg_upsert_snapshot is configured, use the upsert path.
+    #}
+    {% set use_iceberg_upsert = config.get('iceberg_upsert_snapshot', false) %}
+
+    {% if use_iceberg_upsert %}
+      {{ flink__iceberg_snapshot_merge_sql(target, source, insert_cols) }}
+    {% else %}
+      {{ flink__paimon_snapshot_merge_sql(target, source, insert_cols) }}
+    {% endif %}
+{%- endmacro %}
+
+
+{#
+  Iceberg-optimized snapshot merge using upsert-enabled INSERT.
+
+  Instead of separate UPDATE + INSERT, we use Iceberg's upsert capability
+  which handles the merge in a single operation. The staging table already
+  contains both the updated existing records (with dbt_valid_to set) and
+  new records. We insert all of them with upsert-enabled, and Iceberg's
+  equality delete mechanism handles the rest.
+
+  For closing out old versions: we insert the updated rows (with dbt_valid_to set)
+  using upsert on dbt_scd_id, which overwrites the existing open-ended records.
+
+  For new versions: we insert them directly (dbt_change_type='insert').
+#}
+{% macro flink__iceberg_snapshot_merge_sql(target, source, insert_cols) -%}
+    {%- set insert_cols_csv = insert_cols | join(', ') -%}
+
+    {%- set columns = config.get("snapshot_table_column_names") or get_snapshot_table_column_names() -%}
+
+    {# Upsert all changes: both closed-out records and new versions #}
+    INSERT INTO {{ target }} /*+ OPTIONS('upsert-enabled' = 'true') */
+    ({{ insert_cols_csv }})
+    SELECT {% for column in insert_cols -%}
+        DBT_INTERNAL_SOURCE.{{ column }} {%- if not loop.last %}, {%- endif %}
+    {%- endfor %}
+    FROM {{ source }} AS DBT_INTERNAL_SOURCE;
+{%- endmacro %}
+
+
+{#
+  Paimon/generic snapshot merge using UPDATE + INSERT.
+
+  This is the original implementation for connectors that support
+  UPDATE statements (Paimon primary key tables in batch mode).
+#}
+{% macro flink__paimon_snapshot_merge_sql(target, source, insert_cols) -%}
     {%- set insert_cols_csv = insert_cols | join(', ') -%}
 
     {%- set columns = config.get("snapshot_table_column_names") or get_snapshot_table_column_names() -%}
