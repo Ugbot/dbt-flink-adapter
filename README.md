@@ -114,7 +114,7 @@ An alternative adapter in `adapter/` submits compiled SQL directly to a long-run
 
 ## Contributing
 
-See [CHANGELOG.md](CHANGELOG.md) for version history. Development documentation lives in `docs/dev/`.
+See [CHANGELOG.md](CHANGELOG.md) for version history. Development documentation lives in `.dev-docs/`.
 
 ## License
 

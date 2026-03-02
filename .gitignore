@@ -136,5 +136,4 @@ dmypy.json
 logs/
 
 # Dev documentation (session notes, guides, summaries)
-docs/dev/
-dev/
+.dev-docs/
