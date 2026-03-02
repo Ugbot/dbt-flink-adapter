@@ -5,6 +5,6 @@ flink:
       type: flink
       host: localhost
       port: 18083
-      database: default_catalog
-      schema: default_database
+      database: lakehouse
+      schema: medallion
       session_name: medallion_lakehouse_dev

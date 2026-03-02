@@ -62,7 +62,6 @@ services:
         -Djavax.jdo.option.ConnectionPassword=hive
     volumes:
       - hive-metastore-data:/opt/hive/data
-      - hms-pg-driver:/opt/hive/lib/postgres-driver
     networks:
       - flink-network
     healthcheck:
@@ -126,12 +125,8 @@ services:
         s3.secret-key: minioadmin
         # Enable SQL Gateway
         sql-gateway.endpoint.rest.address: 0.0.0.0
-        # Load connector JARs from volume mount subdirectories
-        classloader.additional-classpaths: /opt/flink/lib/cdc/;/opt/flink/lib/lakehouse/
     volumes:
       - flink-checkpoints:/tmp/flink-checkpoints
-      - cdc-connectors:/opt/flink/lib/cdc
-      - lakehouse-connectors:/opt/flink/lib/lakehouse
       - s3-plugin:/opt/flink/plugins/s3-fs-hadoop
     networks:
       - flink-network
@@ -163,12 +158,8 @@ services:
         s3.path-style-access: true
         s3.access-key: minioadmin
         s3.secret-key: minioadmin
-        # Load connector JARs from volume mount subdirectories
-        classloader.additional-classpaths: /opt/flink/lib/cdc/;/opt/flink/lib/lakehouse/
     volumes:
       - flink-checkpoints:/tmp/flink-checkpoints
-      - cdc-connectors:/opt/flink/lib/cdc
-      - lakehouse-connectors:/opt/flink/lib/lakehouse
       - s3-plugin:/opt/flink/plugins/s3-fs-hadoop
     networks:
       - flink-network
@@ -206,11 +197,7 @@ services:
         s3.path-style-access: true
         s3.access-key: minioadmin
         s3.secret-key: minioadmin
-        # Load connector JARs from volume mount subdirectories
-        classloader.additional-classpaths: /opt/flink/lib/cdc/;/opt/flink/lib/lakehouse/
     volumes:
-      - cdc-connectors:/opt/flink/lib/cdc
-      - lakehouse-connectors:/opt/flink/lib/lakehouse
       - s3-plugin:/opt/flink/plugins/s3-fs-hadoop
     networks:
       - flink-network
@@ -229,7 +216,6 @@ services:
     container_name: tk-kafka
     ports:
       - "19092:9092"
-      - "19093:9093"
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT'
@@ -313,7 +299,7 @@ services:
     networks:
       - flink-network
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-proot"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-pmysql"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -377,10 +363,7 @@ volumes:
   mysql-data:
   minio-data:
   hive-metastore-data:
-  cdc-connectors:
-  lakehouse-connectors:
   s3-plugin:
-  hms-pg-driver:
 
 networks:
   flink-network:

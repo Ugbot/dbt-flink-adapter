@@ -16,12 +16,10 @@ Run:
 """
 
 import time
-import uuid
 
 import pytest
 
 from tests.e2e.lakehouse.conftest import (
-    ICEBERG_WAREHOUSE,
     MINIO_BUCKET,
     execute_sql,
     fetch_all_results,

@@ -146,10 +146,10 @@ do_run() {
         echo -e "${GREEN}  Infrastructure already running.${NC}"
     else
         echo -e "${YELLOW}  Starting podman compose services...${NC}"
+        podman compose -f "$COMPOSE_FILE" up -d
         if [[ "$BACKEND" == "fluss" ]]; then
-            podman compose -f "$COMPOSE_FILE" --profile fluss up -d
-        else
-            podman compose -f "$COMPOSE_FILE" up -d
+            echo -e "${YELLOW}  Note: Fluss backend requires a separate Fluss cluster.${NC}"
+            echo -e "${YELLOW}  Ensure fluss-coordinator and fluss-tablet-server are running.${NC}"
         fi
         echo -e "${GREEN}  ✓ Services started${NC}"
 

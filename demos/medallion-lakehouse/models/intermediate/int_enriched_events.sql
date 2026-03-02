@@ -3,6 +3,7 @@
     materialized='table',
     catalog_managed=true,
     connector_properties=lakehouse_table_properties(primary_key=true),
+    columns='`event_id` INT, `user_id` INT, `username` STRING, `city` STRING, `event_type` STRING, `amount` DOUBLE, `event_time` TIMESTAMP(3), `is_high_value` BOOLEAN, `user_tier` STRING, `event_category` STRING',
     primary_key=['event_id']
   )
 }}

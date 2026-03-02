@@ -14,6 +14,9 @@ RED='\033[0;31m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
+# Resolve script directory for relative path references
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 echo -e "${GREEN}Initializing test-kit environment...${NC}"
 echo ""
 
@@ -99,10 +102,10 @@ download_jar "Apache Iceberg (Flink 1.20)" \
     "$MAVEN_ICEBERG_BASE/iceberg-flink-runtime-1.20/1.7.1/iceberg-flink-runtime-1.20-1.7.1.jar" \
     "$LAKEHOUSE_DIR/iceberg-flink-runtime-1.20-1.7.1.jar"
 
-# Hudi: fat bundle JAR for Flink 1.20
+# Hudi: fat bundle JAR for Flink 1.20 (requires Hudi 1.0.0+ for Flink 1.20 support)
 download_jar "Apache Hudi (Flink 1.20)" \
-    "$MAVEN_HUDI_BASE/hudi-flink1.20-bundle/0.15.0/hudi-flink1.20-bundle-0.15.0.jar" \
-    "$LAKEHOUSE_DIR/hudi-flink1.20-bundle-0.15.0.jar"
+    "$MAVEN_HUDI_BASE/hudi-flink1.20-bundle/1.1.1/hudi-flink1.20-bundle-1.1.1.jar" \
+    "$LAKEHOUSE_DIR/hudi-flink1.20-bundle-1.1.1.jar"
 
 # ---------------------------------------------------------------------------
 # Section 3: S3 Filesystem Plugin
@@ -186,11 +189,26 @@ echo -e "${GREEN}  ✓ S3 plugin installed${NC}"
 echo ""
 echo -e "${CYAN}=== Hive Metastore Setup ===${NC}"
 
-# The HMS container needs the PostgreSQL JDBC driver
+# The HMS container needs the PostgreSQL JDBC driver.
+# The driver must be installed and HMS restarted so it picks up the driver.
 if podman ps --filter "name=tk-hive-metastore" --format '{{.Names}}' | grep -q "tk-hive-metastore"; then
     echo -e "${YELLOW}  Installing PostgreSQL JDBC driver for HMS...${NC}"
     podman cp "$CDC_DIR/postgresql-42.7.4.jar" "tk-hive-metastore:/opt/hive/lib/postgres.jar" 2>/dev/null || true
     echo -e "${GREEN}  ✓ HMS PostgreSQL driver installed${NC}"
+
+    echo -e "${YELLOW}  Restarting Hive Metastore to load JDBC driver...${NC}"
+    podman restart tk-hive-metastore
+    # Wait for HMS to come back
+    for i in $(seq 1 30); do
+        if podman exec tk-hive-metastore bash -c "cat < /dev/null > /dev/tcp/localhost/9083" 2>/dev/null; then
+            echo -e "${GREEN}  ✓ Hive Metastore restarted and healthy${NC}"
+            break
+        fi
+        if [ "$i" -eq 30 ]; then
+            echo -e "${RED}  ✗ Hive Metastore did not become healthy after restart${NC}"
+        fi
+        sleep 2
+    done
 else
     echo -e "${YELLOW}  Hive Metastore container not running — skipping HMS driver install${NC}"
 fi
@@ -203,13 +221,13 @@ echo -e "${CYAN}=== Database Initialization ===${NC}"
 
 # PostgreSQL: CDC test database
 echo -e "${YELLOW}  Initializing PostgreSQL CDC database...${NC}"
-podman cp sql/postgres/init-postgres.sql tk-postgres:/tmp/init.sql
+podman cp "$SCRIPT_DIR/sql/postgres/init-postgres.sql" tk-postgres:/tmp/init.sql
 podman exec tk-postgres psql -U postgres -d testdb -f /tmp/init.sql > /dev/null 2>&1
 echo -e "${GREEN}  ✓ PostgreSQL CDC database initialized${NC}"
 
 # PostgreSQL: Analytics schema
 echo -e "${YELLOW}  Initializing PostgreSQL analytics schema...${NC}"
-podman cp sql/postgres/init-analytics.sql tk-postgres:/tmp/init-analytics.sql
+podman cp "$SCRIPT_DIR/sql/postgres/init-analytics.sql" tk-postgres:/tmp/init-analytics.sql
 podman exec tk-postgres psql -U postgres -d testdb -f /tmp/init-analytics.sql > /dev/null 2>&1
 echo -e "${GREEN}  ✓ PostgreSQL analytics schema initialized${NC}"
 
@@ -227,7 +245,7 @@ podman exec tk-postgres psql -U postgres -tc "SELECT 1 FROM pg_database WHERE da
 
 # MySQL: CDC test database
 echo -e "${YELLOW}  Initializing MySQL database...${NC}"
-podman exec -i tk-mysql mysql -u root -pmysql < sql/mysql/init-mysql.sql 2>/dev/null
+podman exec -i tk-mysql mysql -u root -pmysql < "$SCRIPT_DIR/sql/mysql/init-mysql.sql" 2>/dev/null
 echo -e "${GREEN}  ✓ MySQL initialized${NC}"
 
 # ---------------------------------------------------------------------------
@@ -248,11 +266,12 @@ for i in $(seq 1 15); do
     sleep 2
 done
 
-# Verify lakehouse bucket exists via the mc init container
+# Verify lakehouse bucket exists by listing it (HEAD request returns 200 if bucket exists)
 echo -e "${YELLOW}  Verifying lakehouse bucket...${NC}"
-if curl -sf http://localhost:19000/lakehouse/ > /dev/null 2>&1 || \
-   curl -sf "http://localhost:19000/minio/health/live" > /dev/null 2>&1; then
+if curl -sf -o /dev/null -w "%{http_code}" http://localhost:19000/lakehouse/ 2>/dev/null | grep -q "200"; then
     echo -e "${GREEN}  ✓ MinIO lakehouse bucket available${NC}"
+else
+    echo -e "${YELLOW}  Lakehouse bucket not directly accessible — minio-init container should have created it${NC}"
 fi
 
 # ---------------------------------------------------------------------------
@@ -262,7 +281,7 @@ echo ""
 echo -e "${CYAN}=== Restarting Flink Components ===${NC}"
 
 echo -e "${YELLOW}  Restarting TaskManagers and SQL Gateway to load connectors...${NC}"
-podman compose restart taskmanager sql-gateway
+podman compose -f "$SCRIPT_DIR/docker-compose.yml" restart taskmanager sql-gateway
 echo -e "${GREEN}  ✓ Flink components restarted${NC}"
 
 # Wait for SQL Gateway to come back
@@ -312,7 +331,7 @@ echo "  Grafana:            http://localhost:13000"
 echo ""
 echo "Installed connectors:"
 echo "  CDC:       MySQL CDC 3.0.0, PostgreSQL CDC 3.0.0, JDBC 3.3.0, Kafka 3.3.0"
-echo "  Lakehouse: Paimon 1.1.0, Iceberg 1.7.1, Hudi 0.15.0"
+echo "  Lakehouse: Paimon 1.1.0, Iceberg 1.7.1, Hudi 1.1.1"
 echo "  Storage:   S3 FS Hadoop 1.20.1 (MinIO-compatible)"
 echo ""
 echo "Next steps:"

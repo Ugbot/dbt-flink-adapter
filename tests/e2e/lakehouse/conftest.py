@@ -12,7 +12,7 @@ import logging
 import os
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import pytest
 import requests
@@ -189,7 +189,7 @@ def fetch_all_results(
 ) -> List[List[Any]]:
     """Execute SQL and return all result rows as a list of lists.
 
-    Handles pagination via nextResultUri if present.
+    Follows pagination via nextResultUri until resultType is EOS.
 
     Args:
         session: Session dict.
@@ -200,11 +200,23 @@ def fetch_all_results(
         List of row data (each row is a list of column values).
     """
     result = execute_sql(session, sql, timeout=timeout)
+    url = session["url"]
     rows: List[List[Any]] = []
 
-    if "results" in result and "data" in result["results"]:
-        for row in result["results"]["data"]:
-            rows.append(row.get("fields", row.get("data", [])))
+    def _extract_rows(page: Dict[str, Any]) -> None:
+        if "results" in page and "data" in page["results"]:
+            for row in page["results"]["data"]:
+                rows.append(row.get("fields", row.get("data", [])))
+
+    _extract_rows(result)
+
+    # Follow pagination until End-Of-Stream
+    while result.get("resultType") != "EOS" and result.get("nextResultUri"):
+        next_uri = result["nextResultUri"]
+        resp = requests.get(f"{url}{next_uri}", timeout=10)
+        resp.raise_for_status()
+        result = resp.json()
+        _extract_rows(result)
 
     return rows
 
@@ -247,6 +259,8 @@ def list_s3_objects(
 ) -> List[str]:
     """List all objects under a prefix in the MinIO bucket.
 
+    Handles pagination for prefixes with more than 1000 objects.
+
     Args:
         minio_client: boto3 S3 client from fixture.
         prefix: S3 key prefix to list under.
@@ -255,8 +269,12 @@ def list_s3_objects(
     Returns:
         List of S3 object keys.
     """
-    response = minio_client.list_objects_v2(Bucket=bucket, Prefix=prefix)
-    return [obj["Key"] for obj in response.get("Contents", [])]
+    keys: List[str] = []
+    paginator = minio_client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            keys.append(obj["Key"])
+    return keys
 
 
 @pytest.fixture(scope="session")

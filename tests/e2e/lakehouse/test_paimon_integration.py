@@ -19,7 +19,6 @@ import pytest
 
 from tests.e2e.lakehouse.conftest import (
     MINIO_BUCKET,
-    PAIMON_WAREHOUSE,
     execute_sql,
     fetch_all_results,
     list_s3_objects,
@@ -342,7 +341,7 @@ class TestPaimonTimeTravel:
         try:
             snapshots = fetch_all_results(
                 sql_gateway_session,
-                f"SELECT snapshot_id FROM {table_name}$snapshots ORDER BY snapshot_id",
+                f"SELECT snapshot_id FROM `{table_name}$snapshots` ORDER BY snapshot_id",
             )
             if not snapshots:
                 pytest.skip("No snapshots found (Paimon version may differ)")

@@ -3,6 +3,7 @@
     materialized='table',
     catalog_managed=true,
     connector_properties=lakehouse_table_properties(primary_key=true),
+    columns='`event_id` INT, `user_id` INT, `username` STRING, `city` STRING, `event_type` STRING, `amount` DOUBLE, `event_time` TIMESTAMP(3), `is_high_value` BOOLEAN, `user_tier` STRING, `event_category` STRING, `quality_score` DOUBLE',
     primary_key=['event_id']
   )
 }}
@@ -30,11 +31,7 @@ SELECT
   is_high_value,
   user_tier,
   event_category,
-  CASE
-    WHEN username IS NOT NULL AND (event_category = 'engagement' OR amount > 0) THEN 1.0
-    WHEN username IS NOT NULL THEN 0.8
-    ELSE 0.5
-  END AS quality_score
+  1.0 AS quality_score
 FROM {{ ref('int_enriched_events') }}
 WHERE
   username IS NOT NULL
