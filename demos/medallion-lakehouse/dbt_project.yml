@@ -1,0 +1,38 @@
+name: 'medallion_lakehouse'
+version: '1.0.0'
+config-version: 2
+
+profile: 'flink'
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+
+vars:
+  # Backend selection: 'paimon' (default), 'iceberg', or 'fluss'
+  lakehouse_backend: paimon
+
+  # MinIO / S3 configuration
+  s3_endpoint: "http://minio:9000"
+  s3_access_key: "minioadmin"
+  s3_secret_key: "minioadmin"
+  s3_bucket: "lakehouse"
+
+  # Hive Metastore (for Iceberg hive catalog)
+  hms_uri: "thrift://hive-metastore:9083"
+
+  # Fluss coordinator (for Fluss backend)
+  fluss_coordinator: "fluss-coordinator:9123"
+
+on-run-start:
+  - "{{ setup_lakehouse_catalog() }}"
+
+models:
+  medallion_lakehouse:
+    +materialized: table
+    +catalog_managed: true
+    staging:
+      +materialized: table
+    intermediate:
+      +materialized: table
+    marts:
+      +materialized: table

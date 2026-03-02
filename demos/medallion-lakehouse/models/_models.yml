@@ -1,0 +1,132 @@
+version: 2
+
+models:
+  # ---------------------------------------------------------------------------
+  # Bronze Layer (Staging)
+  # ---------------------------------------------------------------------------
+  - name: stg_raw_events
+    description: >
+      Bronze layer: Raw event data ingested into the lakehouse.
+      Contains synthetic purchase, refund, page_view, and signup events
+      generated from a VALUES clause (simulating datagen or Kafka source).
+    columns:
+      - name: event_id
+        description: Unique event identifier
+      - name: user_id
+        description: User who triggered the event
+      - name: event_type
+        description: "Event type: purchase, refund, page_view, signup"
+      - name: amount
+        description: Transaction amount (0 for non-monetary events)
+      - name: event_time
+        description: When the event occurred
+      - name: raw_payload
+        description: Raw JSON payload metadata
+
+  - name: stg_raw_users
+    description: >
+      Bronze layer: User dimension data. Contains 20 synthetic users
+      with city, subscription status, and signup date.
+    columns:
+      - name: user_id
+        description: Unique user identifier
+      - name: username
+        description: Display name
+      - name: email
+        description: Generated email address
+      - name: city
+        description: User city
+      - name: signup_date
+        description: Account creation date
+      - name: is_premium
+        description: Whether user has premium subscription
+
+  # ---------------------------------------------------------------------------
+  # Silver Layer (Intermediate)
+  # ---------------------------------------------------------------------------
+  - name: int_enriched_events
+    description: >
+      Silver layer: Events enriched with user data. Joins raw events with
+      user dimension and adds computed fields (is_high_value, user_tier,
+      event_category). Deduplicated by event_id primary key.
+    columns:
+      - name: event_id
+        description: Unique event identifier (primary key)
+      - name: user_id
+        description: User who triggered the event
+      - name: username
+        description: User display name (from user dimension)
+      - name: city
+        description: User city (from user dimension)
+      - name: event_type
+        description: Event type
+      - name: amount
+        description: Transaction amount
+      - name: event_time
+        description: Event timestamp
+      - name: is_high_value
+        description: "True if amount >= $100"
+      - name: user_tier
+        description: "premium or standard based on subscription"
+      - name: event_category
+        description: "monetary (purchase/refund) or engagement"
+
+  - name: int_deduplicated
+    description: >
+      Silver layer: Quality-checked events with failed joins and invalid
+      zero-amount monetary events filtered out. Includes quality_score
+      for data monitoring. This is the single source of truth for the
+      Gold layer.
+    columns:
+      - name: event_id
+        description: Unique event identifier (primary key)
+      - name: quality_score
+        description: "Data quality score (1.0 = perfect, 0.5 = issues)"
+
+  # ---------------------------------------------------------------------------
+  # Gold Layer (Marts)
+  # ---------------------------------------------------------------------------
+  - name: fct_event_counts
+    description: >
+      Gold layer: Aggregated event metrics by event type and user tier.
+      Powers the analytics dashboard. One row per (event_type, user_tier).
+    columns:
+      - name: event_type
+        description: Event type (primary key part 1)
+      - name: user_tier
+        description: User tier (primary key part 2)
+      - name: total_events
+        description: Count of events
+      - name: total_amount
+        description: Sum of all amounts
+      - name: avg_amount
+        description: Average amount per event
+      - name: max_amount
+        description: Largest single transaction
+      - name: high_value_count
+        description: "Count of events with amount >= $100"
+      - name: high_value_ratio
+        description: Fraction of high-value events
+
+  - name: dim_users
+    description: >
+      Gold layer: User dimension enriched with activity metrics from
+      Silver layer events. One row per user with total events, spend,
+      and activity level classification.
+    columns:
+      - name: user_id
+        description: Unique user identifier (primary key)
+      - name: username
+        description: Display name
+      - name: total_events
+        description: Number of events by this user
+      - name: total_spend
+        description: Total purchase amount
+      - name: avg_spend
+        description: Average purchase amount
+      - name: purchase_count
+        description: Number of purchase events
+      - name: refund_count
+        description: Number of refund events
+      - name: activity_level
+        description: "high (5+ events), medium (2-4), low (0-1)"
