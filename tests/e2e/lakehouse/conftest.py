@@ -113,7 +113,7 @@ def sql_gateway_session() -> Dict[str, str]:
     resp = requests.post(
         f"{gw_url}/v1/sessions",
         json={"properties": {}},
-        timeout=10,
+        timeout=30,
     )
     resp.raise_for_status()
     session_handle = resp.json()["sessionHandle"]
@@ -149,7 +149,7 @@ def execute_sql(
     resp = requests.post(
         f"{url}/v1/sessions/{handle}/statements",
         json={"statement": sql},
-        timeout=10,
+        timeout=30,
     )
     resp.raise_for_status()
     operation_handle = resp.json()["operationHandle"]
@@ -158,7 +158,7 @@ def execute_sql(
     while time.time() < deadline:
         resp = requests.get(
             f"{url}/v1/sessions/{handle}/operations/{operation_handle}/status",
-            timeout=5,
+            timeout=30,
         )
         resp.raise_for_status()
         status = resp.json().get("status", "")
@@ -167,7 +167,7 @@ def execute_sql(
         if status == "ERROR":
             result_resp = requests.get(
                 f"{url}/v1/sessions/{handle}/operations/{operation_handle}/result/0",
-                timeout=5,
+                timeout=30,
             )
             raise RuntimeError(
                 f"SQL execution failed: {result_resp.text}\nSQL: {sql[:300]}"
@@ -178,7 +178,7 @@ def execute_sql(
 
     resp = requests.get(
         f"{url}/v1/sessions/{handle}/operations/{operation_handle}/result/0",
-        timeout=10,
+        timeout=30,
     )
     resp.raise_for_status()
     return resp.json()

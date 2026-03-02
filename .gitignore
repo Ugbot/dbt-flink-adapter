@@ -137,3 +137,6 @@ logs/
 
 # Dev documentation (session notes, guides, summaries)
 .dev-docs/
+
+# Connector JARs (downloaded by setup scripts, too large for git)
+scripts/test-kit/jars/
